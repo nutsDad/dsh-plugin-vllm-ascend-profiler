@@ -214,6 +214,87 @@
     };
   }
 
+  // ── motion helpers ───────────────────────────────────────────────────────
+  // Every animation goes through these so one switch can turn the whole page
+  // static (the topbar 动效 toggle adds `no-motion` to <body>, and the OS-level
+  // `prefers-reduced-motion` is honoured by the stylesheet as well).
+
+  /** Whether animation is currently allowed. */
+  function motionEnabled() {
+    if (typeof document === 'undefined') return false;
+    if (document.body?.classList.contains('no-motion') === true) return false;
+    return !(typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches);
+  }
+
+  /**
+   * Animate a number from `from` to `to`, formatting each frame.
+   * @param {object} options - `{ from, to, duration, onFrame, onDone }`.
+   * @returns {() => void} cancel function.
+   */
+  function animateNumber({ from = 0, to, duration = 650, onFrame, onDone }) {
+    if (typeof to !== 'number' || !Number.isFinite(to)) {
+      onFrame?.(to);
+      onDone?.();
+      return () => {};
+    }
+    if (!motionEnabled() || duration <= 0) {
+      onFrame?.(to);
+      onDone?.();
+      return () => {};
+    }
+    let frame = 0;
+    const started = performance.now();
+    const tick = (now) => {
+      const progress = Math.min(1, (now - started) / duration);
+      // easeOutCubic: fast start, settles gently — reads as "counting up".
+      const eased = 1 - (1 - progress) ** 3;
+      onFrame?.(from + (to - from) * eased);
+      if (progress < 1) frame = requestAnimationFrame(tick);
+      else onDone?.();
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }
+
+  /**
+   * Tween a set of numeric properties with an easing function.
+   * Used by the swimlane for smooth zoom (instead of jumping between scales).
+   *
+   * @param {object} input - `{ from, to, duration, onFrame, onDone }`.
+   * @returns {() => void} cancel function.
+   */
+  function tween({ from, to, duration = 220, onFrame, onDone }) {
+    const keys = Object.keys(to);
+    if (!motionEnabled() || duration <= 0) {
+      onFrame?.(to);
+      onDone?.();
+      return () => {};
+    }
+    let frame = 0;
+    const started = performance.now();
+    const tick = (now) => {
+      const progress = Math.min(1, (now - started) / duration);
+      const eased = 1 - (1 - progress) ** 3;
+      const current = {};
+      for (const key of keys) current[key] = from[key] + (to[key] - from[key]) * eased;
+      onFrame?.(current);
+      if (progress < 1) frame = requestAnimationFrame(tick);
+      else onDone?.();
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }
+
+  /** Re-trigger a CSS entrance animation on a section that just became visible. */
+  function playEnter(node, className = 'enter') {
+    if (node === null || node === undefined) return;
+    node.classList.remove('enter', 'enter-2', 'enter-3');
+    if (!motionEnabled()) return;
+    // Reading offsetWidth restarts the animation without a forced timeout.
+    void node.offsetWidth;
+    node.classList.add(className);
+  }
+
   global.VAP = global.VAP ?? {};
   Object.assign(global.VAP, {
     CATEGORY_COLORS,
@@ -235,5 +316,9 @@
     sumBy,
     hashColor,
     debounce,
+    motionEnabled,
+    animateNumber,
+    tween,
+    playEnter,
   });
 })(window);

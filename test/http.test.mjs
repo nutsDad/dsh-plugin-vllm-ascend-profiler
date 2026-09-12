@@ -111,9 +111,13 @@ test('serves the analyzer page and its assets', async () => {
   assert.equal(page.status, 200);
   assert.match(page.headers['content-type'], /text\/html/);
   assert.ok(page.body.includes('vLLM-Ascend Profiler Analyzer'));
-  assert.ok(page.body.includes('模块一 · Host / Device 算子执行泳道图'));
-  assert.ok(page.body.includes('模块二 · 算子耗时占比'));
-  assert.ok(page.body.includes('模块三 · 结构化性能优化建议'));
+  // The page is a five-step pipeline; the module headings are its backbone.
+  for (const heading of ['Host / Device 算子执行泳道图', '算子耗时占比', '结构化性能优化建议', '导入 profiling 产物', '概览与定位']) {
+    assert.ok(page.body.includes(heading), `the page must contain the "${heading}" section`);
+  }
+  for (const step of ['时序取证', '占比归因', '优化行动']) {
+    assert.ok(page.body.includes(step), `the stepper must name step "${step}"`);
+  }
 
   for (const asset of ['styles.css', 'app.js', 'util.js', 'api.js', 'charts.js', 'gantt.js', 'advice-view.js', 'docs-view.js']) {
     const res = await request(route, { path: `/vllm-ascend-profiler/${asset}` });

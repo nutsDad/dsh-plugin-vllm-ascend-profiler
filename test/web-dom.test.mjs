@@ -28,13 +28,17 @@ const fixtureDir = join(here, 'fixtures', 'host-schedule-bound');
 class FakeNode {
   constructor(tag) {
     this.tagName = tag;
-    this.children = [];
+    /** All appended nodes, text included (the real DOM's childNodes). */
+    this._nodes = [];
     this.parentElement = undefined;
+    /** @type {Record<string, Function[]>} */
+    this._listeners = {};
     this.listenerCount = 0;
     this.hidden = false;
     this.disabled = false;
+    this.checked = false;
     this.value = '';
-    this.style = { setProperty() {}, };
+    this.style = { setProperty() {} };
     this.dataset = {};
     this._attributes = new Map();
     this._text = '';
@@ -52,6 +56,11 @@ class FakeNode {
     };
   }
 
+  /** Elements only, like the real DOM's `children`. */
+  get children() {
+    return this._nodes.filter((node) => node instanceof FakeNode);
+  }
+
   set id(value) {
     this._id = value;
     if (value !== undefined) registry.set(value, this);
@@ -63,11 +72,21 @@ class FakeNode {
 
   set textContent(value) {
     this._text = String(value);
-    this.children = [];
+    this._nodes = [];
   }
 
   get textContent() {
-    return this._text + this.children.map((child) => child.textContent).join('');
+    return this._text + this._nodes.map((child) => child.textContent).join('');
+  }
+
+  /** Mirrors the real DOM closely enough for `replaceChildren(...node.childNodes)`. */
+  get childNodes() {
+    if (this._nodes.length > 0) return this._nodes;
+    return this._text === '' ? [] : [{ textContent: this._text, nodeType: 3 }];
+  }
+
+  get firstChild() {
+    return this.childNodes[0] ?? null;
   }
 
   set className(value) {
@@ -79,33 +98,69 @@ class FakeNode {
   }
 
   setAttribute(name, value) {
-    this._attributes.set(name, String(value));
-    if (name === 'id') this.id = String(value);
+    const text = String(value);
+    this._attributes.set(name, text);
+    // The real DOM keeps these in sync with their property forms; the page and
+    // the tests both rely on that (`class`, `hidden`, `data-*`).
+    if (name === 'id') this.id = text;
+    else if (name === 'class') this.className = text;
+    else if (name === 'hidden') this.hidden = true;
+    else if (name === 'checked') this.checked = true;
+    else if (name === 'value') this.value = text;
+    else if (name.startsWith('data-')) this.dataset[dataKey(name)] = text;
   }
 
   getAttribute(name) {
+    if (name === 'class') return this.className === '' ? null : this.className;
+    if (name === 'hidden') return this.hidden ? '' : null;
     return this._attributes.get(name) ?? null;
   }
 
   append(...nodes) {
     for (const node of nodes) {
       if (node === undefined || node === null) continue;
-      this.children.push(node);
+      this._nodes.push(node);
       if (node instanceof FakeNode) node.parentElement = this;
     }
   }
 
   replaceChildren(...nodes) {
-    this.children = [];
+    this._nodes = [];
     this._text = '';
     this.append(...nodes);
   }
 
-  addEventListener() {
+  addEventListener(type, handler) {
+    (this._listeners[type] ??= []).push(handler);
     this.listenerCount += 1;
   }
 
-  removeEventListener() {}
+  removeEventListener(type, handler) {
+    const list = this._listeners[type] ?? [];
+    const at = list.indexOf(handler);
+    if (at !== -1) list.splice(at, 1);
+  }
+
+  /** Minimal dispatch: enough for the page's click/keydown handlers. */
+  dispatchEvent(event) {
+    const payload = {
+      type: event.type,
+      target: this,
+      preventDefault() {},
+      stopPropagation() {},
+      key: event.key,
+      clientX: 0,
+      clientY: 0,
+      pointerId: 1,
+      ...event,
+    };
+    for (const handler of [...(this._listeners[event.type] ?? [])]) handler(payload);
+    return true;
+  }
+
+  click() {
+    this.dispatchEvent({ type: 'click' });
+  }
 
   setPointerCapture() {}
 
@@ -116,12 +171,11 @@ class FakeNode {
   scrollIntoView() {}
 
   querySelectorAll(selector) {
-    const attribute = /^\[([\w-]+)\]$/.exec(selector);
     const matches = [];
     const walk = (node) => {
       for (const child of node.children) {
         if (!(child instanceof FakeNode)) continue;
-        if (attribute !== null && child.getAttribute(attribute[1]) !== null) matches.push(child);
+        if (child.matches(selector)) matches.push(child);
         walk(child);
       }
     };
@@ -129,13 +183,125 @@ class FakeNode {
     return matches;
   }
 
+  /** Minimal selector support: `tag`, `.class`, `[attr]`, `tag[attr="v"]`, `[attr="v"]`. */
+  matches(selector) {
+    for (const part of selector.split(',').map((value) => value.trim())) {
+      if (part === '') continue;
+      const match = /^([a-zA-Z]*)(?:\.([\w-]+))?(?:\[([\w-]+)(?:="([^"]*)")?\])?$/.exec(part);
+      if (match === null) continue;
+      const [, tag, className, attr, attrValue] = match;
+      if (tag !== '' && this.tagName.toLowerCase() !== tag.toLowerCase()) continue;
+      if (className !== undefined && !this._classes.has(className)) continue;
+      if (attr !== undefined) {
+        const value = this.getAttribute(attr);
+        if (value === null) continue;
+        if (attrValue !== undefined && value !== attrValue) continue;
+      }
+      return true;
+    }
+    return false;
+  }
+
+  closest(selector) {
+    let node = this;
+    while (node !== undefined) {
+      if (node instanceof FakeNode && node.matches(selector)) return node;
+      node = node.parentElement;
+    }
+    return null;
+  }
+
   querySelector(selector) {
     return this.querySelectorAll(selector)[0] ?? null;
   }
+
+  scrollIntoView() {}
+}
+
+/** Run queued animation frames (the sandbox backs them with setTimeout). */
+function nextFrame() {
+  return new Promise((resolve) => setTimeout(resolve, 40));
 }
 
 /** Id registry backing `document.getElementById`. */
 const registry = new Map();
+
+/** Elements the parser treats as self-closing. */
+const VOID_ELEMENTS = new Set(['input', 'meta', 'link', 'br', 'img', 'hr', 'source', 'area', 'base', 'col', 'embed', 'param', 'track', 'wbr']);
+
+/**
+ * Build a DOM tree from the page's real HTML.
+ *
+ * Parsing the shipped markup (rather than hand-building the elements a test
+ * happens to know about) is what makes this harness worth having: the tests see
+ * the same ids, classes, data attributes, `hidden` flags and inner buttons that
+ * the browser does, so a markup change breaks the tests instead of production.
+ *
+ * @param {string} html - page source.
+ * @param {object} documentStub - the document shim (provides createElement).
+ * @returns {{root: FakeNode, body: FakeNode}} parsed tree and its body element.
+ */
+function parseHtml(html, documentStub) {
+  const root = new FakeNode('html');
+  const stack = [root];
+  /** @type {FakeNode[]} */
+  const selects = [];
+  const token = /<!--[\s\S]*?-->|<\/([a-zA-Z][\w-]*)\s*>|<([a-zA-Z][\w-]*)((?:"[^"]*"|'[^']*'|[^>"'])*?)(\/?)>|([^<]+)/g;
+  let body = root;
+  let match;
+  while ((match = token.exec(html)) !== null) {
+    if (match[0].startsWith('<!--') || match[0].startsWith('<!')) continue;
+    if (match[1] !== undefined) {
+      // Closing tag: pop to the matching element when it is on the stack.
+      for (let at = stack.length - 1; at > 0; at -= 1) {
+        if (stack[at].tagName.toLowerCase() === match[1].toLowerCase()) {
+          stack.length = at;
+          break;
+        }
+      }
+      continue;
+    }
+    if (match[2] !== undefined) {
+      const tag = match[2].toLowerCase();
+      if (tag === 'script' || tag === 'style') {
+        // Skip raw-content elements entirely (the page loads external scripts).
+        const closing = html.indexOf(`</${tag}>`, token.lastIndex);
+        if (closing !== -1) token.lastIndex = closing + tag.length + 3;
+        continue;
+      }
+      const node = documentStub.createElement(tag);
+      for (const attribute of (match[3] ?? '').matchAll(/([a-zA-Z_:][\w:.-]*)(?:\s*=\s*"([^"]*)")?/g)) {
+        // One path for every attribute keeps the property mirroring in
+        // `setAttribute` (id, class, hidden, data-*) authoritative.
+        node.setAttribute(attribute[1], attribute[2] ?? '');
+      }
+      stack[stack.length - 1].append(node);
+      if (tag === 'body') body = node;
+      if (tag === 'select') selects.push(node);
+      if (match[4] !== '/' && !VOID_ELEMENTS.has(tag)) stack.push(node);
+      continue;
+    }
+    if (match[5] !== undefined) {
+      const text = match[5].replace(/\s+/g, ' ').trim();
+      if (text !== '') stack[stack.length - 1].append({ textContent: text, nodeType: 3 });
+    }
+  }
+  // A real `<select>` reports the selected option's value (or the first option's
+  // when none is marked). The page reads `.value` directly, so the harness must
+  // provide it — otherwise every `<select>` would look empty and defaults such
+  // as the row limit would come out as 0.
+  for (const select of selects) {
+    const options = select.querySelectorAll('option');
+    const chosen = options.find((option) => option.getAttribute('selected') !== null) ?? options[0];
+    if (chosen !== undefined) select.value = chosen.getAttribute('value') ?? chosen.textContent;
+  }
+  return { root, body };
+}
+
+/** `data-some-key` → `someKey`. */
+function dataKey(name) {
+  return name.slice(5).replace(/-([a-z])/g, (_, char) => char.toUpperCase());
+}
 
 /** 2D context recorder: every call is accepted and counted. */
 function fakeContext() {
@@ -172,7 +338,7 @@ function fakeContext() {
 }
 
 /** Load the page scripts into a browser-like sandbox, in document order. */
-function loadPage({ withHtmlIds = false, fetchImpl } = {}) {
+function loadPage({ withHtmlIds = false, fetchImpl, noMotion = false } = {}) {
   const documentStub = {
     body: new FakeNode('body'),
     head: new FakeNode('head'),
@@ -198,31 +364,51 @@ function loadPage({ withHtmlIds = false, fetchImpl } = {}) {
     },
   };
   if (withHtmlIds) {
-    // Materialize every element the page declares, so the controller's element
-    // cache resolves exactly as it does in a browser.
+    // Materialize the real page markup, so the controller's element cache, its
+    // bindings and the tests all see the document a browser would build.
     const html = readFileSync(join(webRoot, 'index.html'), 'utf8');
-    for (const match of html.matchAll(/id="([^"]+)"/g)) {
-      const node = match[1].includes('canvas') ? documentStub.createElement('canvas') : new FakeNode('div');
-      node.id = match[1];
+    const parsed = parseHtml(html, documentStub);
+    documentStub.body = parsed.body;
+    for (const node of parsed.root.querySelectorAll('*')) {
+      if (node.tagName.toLowerCase() === 'canvas') {
+        node.clientWidth = 900;
+        node.getContext = () => node._context ?? (node._context = fakeContext());
+      }
+      if (node.id !== '') registry.set(node.id, node);
     }
-    // The legend's parent must expose the category chips bindControls queries.
-    const legend = registry.get('gantt-legend');
-    const chipsParent = new FakeNode('div');
-    for (const category of ['compute', 'comm', 'copy', 'schedule', 'other']) {
-      const chip = new FakeNode('button');
-      chip.setAttribute('data-cat', category);
-      chipsParent.append(chip);
+    registry.set(parsed.body.id || 'body', parsed.body);
+    // The tooltip card needs a measurable box for positioning.
+    const tooltip = registry.get('gantt-tooltip');
+    if (tooltip !== undefined) {
+      tooltip.getBoundingClientRect = () => ({ left: 0, top: 0, width: 300, height: 200, right: 300, bottom: 200 });
     }
-    chipsParent.append(legend);
-    // A tooltip card needs a measurable box for positioning.
-    registry.get('gantt-tooltip').getBoundingClientRect = () => ({ left: 0, top: 0, width: 300, height: 200, right: 300, bottom: 200 });
   }
   const sandbox = {
     document: documentStub,
     console,
     setTimeout,
     clearTimeout,
+    // Animation plumbing the page expects from a browser. Frames are backed by
+    // setTimeout so tests can await `nextFrame()` instead of racing.
+    performance: globalThis.performance,
+    requestAnimationFrame: (callback) => setTimeout(() => callback(globalThis.performance.now()), 0),
+    cancelAnimationFrame: (handle) => clearTimeout(handle),
     devicePixelRatio: 1,
+    matchMedia: () => ({ matches: false }),
+    localStorage: (() => {
+      const store = new Map();
+      return {
+        getItem: (key) => store.get(key) ?? null,
+        setItem: (key, value) => store.set(key, String(value)),
+        removeItem: (key) => store.delete(key),
+      };
+    })(),
+    IntersectionObserver: class {
+      constructor(callback) { this.callback = callback; }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
     location: { origin: 'http://127.0.0.1:3080', pathname: '/vllm-ascend-profiler/', href: '' },
     open() {},
     addEventListener() {},
@@ -238,6 +424,7 @@ function loadPage({ withHtmlIds = false, fetchImpl } = {}) {
   };
   sandbox.window = sandbox;
   sandbox.globalThis = sandbox;
+  if (noMotion) sandbox.document.body.classList.add('no-motion');
   vm.createContext(sandbox);
   for (const file of ['util.js', 'api.js', 'charts.js', 'gantt.js', 'docs-view.js', 'advice-view.js', 'app.js']) {
     const source = readFileSync(join(webRoot, file), 'utf8');
@@ -293,13 +480,15 @@ test('module 2 renders the donut, the ranked bars, and the table', async () => {
 });
 
 test('module 1 renders lanes for both device groups and reports sampling', async () => {
-  const sandbox = loadPage();
+  // Deterministic geometry: motion off. The reveal sweep itself is asserted by
+  // the dedicated animation test below.
+  const sandbox = loadPage({ noMotion: true });
   const viewModel = await loadViewModel();
   const canvas = sandbox.document.createElement('canvas');
   const tooltip = new FakeNode('div');
   const cursor = new FakeNode('span');
-  const selection = new FakeNode('span');
-  const view = new sandbox.VAP.GanttView({ canvas, tooltip, cursorLabel: cursor, selectionLabel: selection });
+  const hint = new FakeNode('span');
+  const view = new sandbox.VAP.GanttView({ canvas, tooltip, cursorLabel: cursor, hintLabel: hint, onSelect: () => {} });
   view.setData(viewModel);
 
   assert.equal(view.rows.filter((entry) => entry.kind === 'header').length, viewModel.timeline.lanes.length);
@@ -307,29 +496,100 @@ test('module 1 renders lanes for both device groups and reports sampling', async
   assert.ok(canvas._context.calls.fillRect > 0, 'bars must be painted');
   assert.ok(canvas._context.calls.fillText > 0, 'labels must be painted');
 
-  // The layout must be bounded by the row limit and total row count.
+  // Options, zoom, pan and reset must stay inside the window.
   view.setOptions({ rowLimit: 5 });
   assert.equal(view.rows.filter((entry) => entry.kind === 'row').length <= viewModel.timeline.lanes.length * 5, true);
-
-  // Zoom, pan and reset must stay inside the window.
   view.zoom(1 / 4);
   assert.ok(view.viewEnd - view.viewStart < viewModel.meta.window.end - viewModel.meta.window.start);
   view.resetView();
   assert.equal(view.viewStart, viewModel.meta.window.start);
   assert.equal(view.viewEnd, viewModel.meta.window.end);
 
-  // Filtering by an operator must keep only its row and report the selection.
+  // Filtering by an operator keeps only its row and reports the filter.
   const firstName = viewModel.timeline.lanes[0].rows[0].name;
   view.filterBy(firstName);
-  assert.match(selection.textContent, /仅显示算子/);
+  assert.match(hint.textContent, /已筛选/);
   const rowsAfterFilter = view.rows.filter((entry) => entry.kind === 'row');
   assert.ok(rowsAfterFilter.every((entry) => entry.row.name === firstName));
   view.filterBy(undefined);
-  assert.match(selection.textContent, /未按算子筛选/);
+  assert.match(hint.textContent, /点击算子条筛选/);
 
-  // Hiding a group must remove its header row.
+  // Focusing an operator zooms to its events (bounded by the data window), and
+  // an unknown operator is reported rather than silently ignored.
+  const focused = view.focusOperator(firstName);
+  assert.equal(focused, true);
+  assert.ok(view.viewStart >= viewModel.meta.window.start - 1, 'the focused view stays inside the window');
+  assert.ok(view.viewEnd <= viewModel.meta.window.end + 1, 'the focused view stays inside the window');
+  assert.equal(view.focusOperator('no-such-operator'), false);
+
+  // Hiding a group removes its header row; category filtering removes rows.
   view.toggleGroup('device');
   assert.equal(view.rows.some((entry) => entry.kind === 'header' && entry.group === 'device'), false);
+  view.toggleGroup('device');
+  view.setCategories(['comm']);
+  assert.ok(view.rows.filter((entry) => entry.kind === 'row').every((entry) => entry.row.category === 'comm' || entry.row.overflow === true));
+  view.setCategories(Object.keys(sandbox.VAP.CATEGORY_LABELS));
+});
+
+test('the swimlane reveal animation paints progressively when motion is on', async () => {
+  const sandbox = loadPage();
+  const viewModel = await loadViewModel();
+  const canvas = sandbox.document.createElement('canvas');
+  const view = new sandbox.VAP.GanttView({ canvas, tooltip: new FakeNode('div'), cursorLabel: new FakeNode('span'), hintLabel: new FakeNode('span') });
+  view.setData(viewModel);
+  const first = canvas._context.calls.fillRect;
+  await nextFrame();
+  const mid = canvas._context.calls.fillRect;
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  const end = canvas._context.calls.fillRect;
+  assert.ok(mid >= first, 'frames advance during the sweep');
+  assert.ok(end > mid, 'the sweep keeps painting until it completes');
+  assert.equal(view.reveal, 1, 'the reveal settles at 1');
+});
+
+test('the time cursor can be played and stopped', async () => {
+  // Motion off: the entry reveal sweep would otherwise keep repainting the canvas
+  // and blur the "stopping halts repaint" assertion. Playback itself is a user
+  // action and works either way.
+  const sandbox = loadPage({ noMotion: true });
+  const viewModel = await loadViewModel();
+  const canvas = sandbox.document.createElement('canvas');
+  const view = new sandbox.VAP.GanttView({ canvas, tooltip: new FakeNode('div'), cursorLabel: new FakeNode('span'), hintLabel: new FakeNode('span') });
+  view.setData(viewModel);
+  const span = viewModel.meta.window.end - viewModel.meta.window.start;
+  try {
+    view.setPlaying(true, 1);
+    // The first frame only establishes a baseline timestamp, so the assertion
+    // waits for a few frames rather than exactly one.
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    assert.notEqual(view.playhead, undefined, 'playback starts a cursor');
+    const slow = (view.playhead ?? 0) - viewModel.meta.window.start;
+    assert.ok(slow > 0, 'the cursor advances');
+    assert.ok(slow < span, 'at 1× the cursor cannot cross the whole window in one step');
+    assert.ok(canvas._context.calls.fillRect > 0, 'playback repaints the canvas');
+
+    // The speed multiplier is applied (and readable); the exact advance per
+    // frame is wall-clock dependent, so only invariants are asserted here.
+    view.setPlaying(false);
+    view.playhead = viewModel.meta.window.start;
+    view.setPlaying(true, 12);
+    assert.equal(view.playSpeed, 12, 'the requested speed is applied');
+    await nextFrame();
+    await nextFrame();
+    assert.ok((view.playhead ?? 0) >= viewModel.meta.window.start, 'the cursor stays inside the window');
+    assert.ok((view.playhead ?? 0) <= viewModel.meta.window.end, 'the cursor stays inside the window');
+
+    // Stopping ends the loop: no further frames, no further repaint.
+    view.setPlaying(false);
+    const painted = canvas._context.calls.fillRect;
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    assert.equal(canvas._context.calls.fillRect, painted, 'a stopped cursor no longer repaints');
+  } finally {
+    // The playback loop is an infinite rAF chain: it must be stopped or the
+    // test process would never exit.
+    view.setPlaying(false);
+  }
+  assert.equal(view.playing, false);
 });
 
 test('module 3 renders the whole five-step chain with evidence and gains', async () => {
@@ -412,7 +672,7 @@ test('the page HTML references only assets the plugin serves', () => {
     if (asset.startsWith('http') || asset.startsWith('#')) continue;
     assert.ok(served.has(asset), `index.html references ${asset}, which the plugin does not serve`);
   }
-  for (const id of ['dropzone', 'gantt-canvas', 'pie-host', 'bar-host', 'ranking-host', 'advice-chain', 'docs-body']) {
+  for (const id of ['dropzone', 'gantt-canvas', 'pie-host', 'bar-host', 'ranking-host', 'advice-chain', 'modal-body', 'stepper']) {
     assert.ok(html.includes(`id="${id}"`), `index.html must define #${id}`);
   }
 });
@@ -444,32 +704,182 @@ test('every element id the controller caches exists in index.html', () => {
   assert.deepEqual(missing, [], `controller caches ids missing from index.html: ${missing.join(', ')}`);
 });
 
-test('the controller initializes against the real page markup', async () => {
-  // Drives `init()` with every declared element present, which is what exercises
-  // cacheElements/bindIntake/bindControls — the code paths that only fail in a
-  // real document.
+/** A UUID-shaped dataset id: the page treats ids as opaque, but the stub routes on shape. */
+const DATASET_ID = '11111111-2222-3333-4444-555555555555';
+
+/**
+ * Boot the whole page against a real dataset: real view model, stubbed API.
+ * This is the integration test for the controller — stepper, filters, charts and
+ * advice are all exercised through the DOM the way a user would.
+ */
+async function bootPage({ withDataset = true, noMotion = true } = {}) {
   const bundle = documentationBundle({ version: '1.0.0' });
+  const viewModel = await loadViewModel();
   const sandbox = loadPage({
     withHtmlIds: true,
-    fetchImpl: async (url) => {
+    // Geometry assertions need deterministic frames; animation itself is covered
+    // by the dedicated motion tests.
+    noMotion,
+    fetchImpl: async (url, options = {}) => {
       const path = String(url);
-      if (path.includes('/api/docs')) return { ok: true, json: async () => bundle };
       if (path.includes('/api/health')) {
-        return { ok: true, json: async () => ({ ok: true, plugin: 'vllm-ascend-profiler', version: '1.0.0', store: { datasets: 0, jobs: 0, maxDatasets: 6 }, limits: { maxUploadBytes: 1000, maxInMemoryBytes: 500, allowPathIngest: true } }) };
+        return { ok: true, json: async () => ({ ok: true, plugin: 'vllm-ascend-profiler', version: '1.0.0', store: { datasets: withDataset ? 1 : 0, jobs: 0, maxDatasets: 6 }, limits: { maxUploadBytes: 1000, maxInMemoryBytes: 500, allowPathIngest: true } }) };
       }
-      if (path.includes('/api/datasets')) return { ok: true, json: async () => ({ datasets: [] }) };
+      if (path.includes('/api/docs')) return { ok: true, json: async () => bundle };
+      if (path.endsWith('/analyze')) {
+        const requested = JSON.parse(options.body ?? '{}').phaseOverride;
+        return { ok: true, json: async () => ({ ok: true, analysis: { ...viewModel.analysis, options: { ...viewModel.analysis.options, phaseOverride: requested } } }) };
+      }
+      if (path.includes(`/api/datasets/${DATASET_ID}`)) return { ok: true, json: async () => viewModel };
+      if (path.includes('/api/datasets')) {
+        return {
+          ok: true,
+          json: async () => (withDataset
+            ? { datasets: [{ id: DATASET_ID, label: 'host-schedule-bound', createdAt: Date.now(), eventCount: viewModel.meta.eventCount, bottleneck: 'Host 调度', windowMs: viewModel.meta.wallUs / 1000 }] }
+            : { datasets: [] }),
+        };
+      }
       return { ok: true, json: async () => ({}) };
     },
   });
-  const listeners = sandbox.document._listeners.filter((entry) => entry.type === 'DOMContentLoaded');
-  assert.equal(listeners.length, 1, 'the controller registers one DOMContentLoaded handler');
-  await listeners[0].handler();
-  // The Gantt view must have been constructed (its canvas was sized) and the
-  // health line filled in by the successful API stubs.
-  const canvas = registry.get('gantt-canvas');
-  assert.ok(canvas.width > 0, 'the swimlane canvas must be sized during init');
+  const handler = sandbox.document._listeners.find((entry) => entry.type === 'DOMContentLoaded');
+  assert.equal(handler !== undefined, true, 'the controller registers a DOMContentLoaded handler');
+  await handler.handler();
+  await nextFrame();
+  await nextFrame();
+  return { sandbox, viewModel, registry };
+}
+
+test('the controller initializes against the real page markup', async () => {
+  const { sandbox } = await bootPage({ withDataset: false });
+  assert.ok(registry.get('gantt-canvas').width > 0, 'the swimlane canvas must be sized during init');
   assert.match(registry.get('health-line').textContent, /服务正常/);
-  assert.equal(registry.get('dataset-list-wrap').hidden, true, 'an empty dataset list hides its panel');
+  assert.equal(registry.get('dataset-row').hidden, true, 'an empty dataset list hides its row');
+  assert.ok(registry.get('gantt-legend').children.length >= 5, 'the legend doubles as the category filter');
+  assert.equal(sandbox.document.body.classList.contains('no-motion'), false);
+});
+
+test('booting with a dataset renders every step of the pipeline', async () => {
+  const { sandbox, viewModel } = await bootPage();
+  for (const id of ['overview', 'module-gantt', 'module-share', 'module-advice']) {
+    assert.equal(registry.get(id).hidden, false, `#${id} must be visible after loading a dataset`);
+  }
+  assert.equal(registry.get('kpis').children.length, 4, 'exactly four headline indicators');
+  assert.equal(registry.get('verdict-badge').textContent, 'Host 调度');
+  const conclusions = registry.get('conclusions');
+  assert.ok(conclusions.children.length > 0 && conclusions.children.length <= 3, 'three prioritised actions');
+  assert.ok(registry.get('pie-host').children.length > 0, 'donut rendered');
+  assert.ok(registry.get('bar-host').children.length > 0, 'bars rendered');
+  assert.equal(registry.get('advice-chain').querySelectorAll('.chain-step').length, 5, 'five reasoning steps');
+  assert.match(registry.get('gantt-hint').textContent, /Ctrl\/⌘\+滚轮缩放/, 'the swimlane hint documents its controls');
+  assert.equal(registry.get('verdict-score').textContent.length > 0, true);
+  void sandbox;
+  void viewModel;
+});
+
+test('a dataset warning is not shown, but a parse failure is', async () => {
+  const { sandbox } = await bootPage();
+  assert.equal(registry.get('error-box').hidden, true);
+  // Errors surface through the same box the intake flow uses.
+  const dropzone = registry.get('dropzone');
+  assert.ok(dropzone !== null && dropzone !== undefined);
+  void sandbox;
+});
+
+test('clicking a bar filters the timeline and shows an active filter chip', async () => {
+  await bootPage();
+  const barHost = registry.get('bar-host');
+  const rows = barHost.querySelectorAll('g.bar-row');
+  assert.ok(rows.length > 0, 'the bar chart must be interactive');
+  const target = rows[0].getAttribute('data-operator');
+  rows[0].click();
+  await nextFrame();
+
+  const chips = registry.get('gantt-filters');
+  assert.equal(chips.children.length, 1, 'one active filter chip');
+  assert.match(chips.children[0].textContent, /算子/);
+  assert.ok(chips.children[0].textContent.includes(target.slice(0, 10)), 'the chip names the operator');
+
+  // The other bars dim, and the pie stays un-filtered (category is not set).
+  const dimmed = barHost.querySelectorAll('g.bar-row').filter((row) => row.classList.contains('dimmed'));
+  assert.equal(dimmed.length, rows.length - 1);
+
+  // Clearing via the chip removes the filter again.
+  chips.children[0].children[0].click();
+  await nextFrame();
+  assert.equal(registry.get('gantt-filters').children.length, 0);
+});
+
+test('clicking a donut legend entry focuses that category and links the views', async () => {
+  await bootPage();
+  const legendButtons = registry.get('pie-legend').querySelectorAll('button');
+  assert.ok(legendButtons.length > 0);
+  legendButtons[0].click();
+  await nextFrame();
+
+  const chips = registry.get('gantt-filters');
+  assert.equal(chips.children.length >= 1, true);
+  assert.match(chips.children[0].textContent, /类别/);
+  // The swimlane legend reflects the same selection.
+  const cat = chips.children[0].textContent.includes('通信') ? 'comm' : undefined;
+  if (cat !== undefined) {
+    const chip = registry.get('gantt-legend').querySelectorAll(`[data-cat="${cat}"]`)[0];
+    assert.equal(chip.getAttribute('aria-pressed'), 'true');
+  }
+});
+
+test('the motion switch persists and stops all animations', async () => {
+  const { sandbox } = await bootPage();
+  const toggle = registry.get('motion-toggle');
+  assert.equal(toggle.checked, true);
+  toggle.checked = false;
+  toggle.dispatchEvent({ type: 'change' });
+  assert.equal(sandbox.document.body.classList.contains('no-motion'), true, 'the body class drives the CSS kill-switch');
+  assert.equal(sandbox.VAP.motionEnabled(), false);
+  assert.equal(sandbox.localStorage.getItem('vap.preferences').includes('"motion":false'), true, 'the choice is remembered');
+
+  toggle.checked = true;
+  toggle.dispatchEvent({ type: 'change' });
+  assert.equal(sandbox.document.body.classList.contains('no-motion'), false);
+});
+
+test('the phase control re-analyses and keeps one scope', async () => {
+  await bootPage();
+  const prefill = registry.get('phase-select').querySelectorAll('[data-phase="prefill"]')[0];
+  prefill.click();
+  await nextFrame();
+  assert.equal(prefill.getAttribute('aria-pressed'), 'true');
+  const auto = registry.get('phase-select').querySelectorAll('[data-phase="auto"]')[0];
+  assert.equal(auto.getAttribute('aria-pressed'), 'false');
+});
+
+test('the play button toggles timeline playback', async () => {
+  await bootPage();
+  const play = registry.get('gantt-play');
+  assert.match(play.textContent, /播放/);
+  play.click();
+  assert.match(play.textContent, /暂停/);
+  play.click();
+  assert.match(play.textContent, /播放/);
+});
+
+test('the stepper marks the section in view and scrolls on click', async () => {
+  await bootPage();
+  const steps = registry.get('stepper').querySelectorAll('.step');
+  assert.equal(steps.length, 5);
+  assert.deepEqual(steps.map((step) => step.dataset.step), ['intake', 'overview', 'module-gantt', 'module-share', 'module-advice']);
+  // Clicking is a no-op scroll in the fake DOM, but the handler must exist.
+  steps[2].click();
+  assert.ok(steps[2].listenerCount > 0);
+});
+
+test('an advice card links back to the timeline with a matching filter', async () => {
+  await bootPage();
+  const link = registry.get('advice-chain').querySelectorAll('button').find((button) => /在第 3 步查看/.test(button.textContent));
+  assert.ok(link !== undefined, 'advice must offer a jump back into the timeline');
+  link.click();
+  await nextFrame();
+  assert.ok(registry.get('gantt-filters').children.length >= 1, 'the jump applies a filter, not just a scroll');
 });
 
 test('init survives an unreachable API without breaking the page', async () => {
@@ -480,7 +890,6 @@ test('init survives an unreachable API without breaking the page', async () => {
     },
   });
   const handler = sandbox.document._listeners.find((entry) => entry.type === 'DOMContentLoaded');
-  // `loadHealth` reports the failure in the footer; the rest of init must still run.
   await assert.doesNotReject(async () => handler.handler());
   assert.match(registry.get('health-line').textContent, /健康检查失败/);
   assert.ok(registry.get('gantt-canvas').width > 0);

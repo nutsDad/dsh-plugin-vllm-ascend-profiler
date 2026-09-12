@@ -1,68 +1,131 @@
 /**
- * Page controller: intake (upload / path), progress, dataset selection, and the
- * three visualization modules.
+ * Page controller.
  *
- * State is intentionally tiny and explicit — one active view model plus the
- * module-level display options — so what the page shows is always a pure
- * function of the server's projection plus the user's toggles.
+ * The page is one analysis instrument with five steps, not five independent
+ * widgets, and this module is what makes that true. Two ideas carry the logic:
+ *
+ * 1. **One filter state.** `state.filters = { operator, category, group, phase }`
+ *    is the single source of truth. The swimlane, the donut, the bar chart, the
+ *    ranking table and the advice links all read and write it, so a click
+ *    anywhere is visible everywhere (the bar chart greys out, the chip row
+ *    updates, the advice card that mentions the same area stays highlighted).
+ *
+ * 2. **A visible pipeline.** The stepper tracks the section in view; each step
+ *    states what it consumes and what it produces; the overview leads with the
+ *    verdict and the three highest-priority actions, each linking into the step
+ *    that justifies it.
+ *
+ * Motion is centralised: the topbar switch (persisted) and the OS
+ * `prefers-reduced-motion` setting both disable every animation through
+ * `VAP.motionEnabled()` and the `no-motion` body class.
  */
 (function bootstrap(global) {
   'use strict';
 
   const VAP = global.VAP;
-  const { h, formatUs, formatPct, formatCount, formatMs, PHASE_LABELS, BOTTLENECK_COLORS, escapeHtml } = VAP;
+  const { h, formatUs, formatPct, formatCount, formatMs, PHASE_LABELS, BOTTLENECK_COLORS, escapeHtml, animateNumber, playEnter } = VAP;
 
   const state = {
     /** @type {object|undefined} */ viewModel: undefined,
     gantt: undefined,
-    /** @type {object|undefined} */ health: undefined,
-    /** @type {object[]} */ datasets: [],
+    health: undefined,
+    datasets: [],
     busy: false,
-    uploadBytes: 0,
+    playing: false,
+    /** Shared cross-module filter. */
+    filters: { operator: undefined, category: undefined, group: undefined },
+    /** Collapsed advice sections, remembered per dataset. */
+    collapsed: new Set(),
   };
 
   const el = {};
+  const STORAGE_KEY = 'vap.preferences';
 
   document.addEventListener('DOMContentLoaded', init);
 
   async function init() {
     cacheElements();
+    restorePreferences();
     bindIntake();
     bindControls();
+    bindStepper();
     state.gantt = new VAP.GanttView({
       canvas: el.ganttCanvas,
       tooltip: el.ganttTooltip,
       cursorLabel: el.ganttCursor,
-      selectionLabel: el.ganttSelection,
-      onSelect: (name) => {
-        el.ganttClear.hidden = name === undefined;
-        renderShare();
+      hintLabel: el.ganttHint,
+      onSelect: (selection) => {
+        state.filters.operator = selection.operator;
+        state.filters.category = selection.categories.length === Object.keys(VAP.CATEGORY_LABELS).length
+          ? undefined
+          : (selection.categories.length === 1 ? selection.categories[0] : undefined);
+        renderFilters();
+        VAP.charts.applyHighlight(el.pieHost.firstChild, state.filters);
+        VAP.charts.applyHighlight(el.barHost.firstChild, state.filters);
       },
     });
     renderLegend();
     await Promise.all([loadHealth(), loadDocs(), refreshDatasetList()]);
-    global.addEventListener('resize', VAP.debounce(() => {
-      state.gantt.resize();
-    }, 120));
+    global.addEventListener('resize', VAP.debounce(() => state.gantt.resize(), 120));
+    global.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        clearFilters();
+        el.modal.hidden = true;
+      }
+    });
   }
 
   function cacheElements() {
     const ids = [
-      'dropzone', 'file-input', 'path-input', 'path-hint', 'btn-path', 'phase-prefill-hint', 'phase-decode-hint',
-      'progress-wrap', 'progress-detail', 'progress-percent', 'progress-bar', 'progress-log',
-      'error-box', 'warn-box', 'ok-box', 'dataset-list', 'dataset-count', 'dataset-list-wrap',
-      'overview', 'kpis', 'bottleneck-banner', 'phase-select', 'btn-reanalyze', 'btn-report-md', 'btn-report-pdf',
-      'module-gantt', 'gantt-canvas', 'gantt-tooltip', 'gantt-cursor', 'gantt-selection', 'gantt-clear',
-      'gantt-legend', 'gantt-sort', 'gantt-limit', 'gantt-host', 'gantt-device', 'gantt-zoom-in', 'gantt-zoom-out', 'gantt-reset', 'gantt-hint',
-      'module-share', 'share-dimension', 'share-scope', 'share-topn', 'pie-host', 'pie-legend', 'bar-host', 'bar-note', 'pie-note', 'ranking-host',
-      'module-advice', 'advice-chain', 'advice-priority',
-      'module-docs', 'docs-body', 'btn-docs', 'btn-about', 'modal', 'modal-title', 'modal-body', 'modal-close', 'health-line',
+      'motion-toggle', 'btn-docs', 'btn-about', 'btn-formats', 'stepper',
+      'intake', 'dropzone', 'file-input', 'path-input', 'btn-path', 'path-hint',
+      'progress-wrap', 'progress-detail', 'progress-percent', 'progress-bar', 'progress-steps', 'progress-log', 'progress-log-toggle',
+      'error-box', 'warn-box', 'dataset-row', 'dataset-list',
+      'overview', 'verdict', 'verdict-badge', 'verdict-summary', 'verdict-meta', 'verdict-score',
+      'kpis', 'conclusions', 'conclusions-note', 'phase-select', 'btn-report-md', 'btn-report-pdf',
+      'module-gantt', 'gantt-legend', 'gantt-groups', 'gantt-filters', 'gantt-play', 'gantt-speed',
+      'gantt-zoom-in', 'gantt-zoom-out', 'gantt-reset', 'gantt-sort', 'gantt-limit',
+      'gantt-canvas', 'gantt-tooltip', 'gantt-cursor', 'gantt-hint',
+      'module-share', 'share-dimension', 'share-scope', 'share-topn', 'share-hint',
+      'pie-host', 'pie-legend', 'bar-host', 'bar-note', 'ranking-details', 'ranking-host',
+      'module-advice', 'advice-priority', 'advice-chain',
+      'modal', 'modal-title', 'modal-body', 'modal-close', 'health-line',
     ];
     for (const id of ids) el[camel(id)] = document.getElementById(id);
   }
 
   function camel(id) {
     return id.replace(/-([a-z])/g, (_, char) => char.toUpperCase());
+  }
+
+  function restorePreferences() {
+    let stored = {};
+    try {
+      stored = JSON.parse(global.localStorage?.getItem(STORAGE_KEY) ?? '{}');
+    } catch {
+      stored = {};
+    }
+    const motion = stored.motion !== false;
+    el.motionToggle.checked = motion;
+    document.body.classList.toggle('no-motion', !motion);
+    if (stored.sortMode !== undefined) el.ganttSort.value = stored.sortMode;
+    if (stored.rowLimit !== undefined) el.ganttLimit.value = String(stored.rowLimit);
+    if (stored.topN !== undefined) el.shareTopn.value = String(stored.topN);
+    if (stored.scope !== undefined) el.shareScope.value = stored.scope;
+  }
+
+  function savePreferences(patch) {
+    let stored = {};
+    try {
+      stored = JSON.parse(global.localStorage?.getItem(STORAGE_KEY) ?? '{}');
+    } catch {
+      stored = {};
+    }
+    try {
+      global.localStorage?.setItem(STORAGE_KEY, JSON.stringify({ ...stored, ...patch }));
+    } catch {
+      // Private mode: preferences simply do not persist.
+    }
   }
 
   // ── intake ──────────────────────────────────────────────────────────────
@@ -92,10 +155,13 @@
       const files = [...(event.dataTransfer?.files ?? [])];
       if (files.length > 0) void uploadFiles(files);
     });
-
     el.btnPath.addEventListener('click', () => void analyzePath());
     el.pathInput.addEventListener('keydown', (event) => {
       if (event.key === 'Enter') void analyzePath();
+    });
+    el.progressLogToggle.addEventListener('click', () => {
+      el.progressLog.hidden = !el.progressLog.hidden;
+      el.progressLogToggle.textContent = el.progressLog.hidden ? '解析日志' : '收起日志';
     });
   }
 
@@ -104,8 +170,7 @@
     if (state.busy) return;
     setBusy(true);
     clearAlerts();
-    el.progressWrap.hidden = false;
-    el.progressLog.replaceChildren();
+    showProgress();
     const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
     try {
       logProgress(`创建收集任务（${String(files.length)} 个文件，共 ${VAP.formatBytes(totalBytes)}）`);
@@ -113,15 +178,14 @@
       let uploaded = 0;
       for (const [index, file] of files.entries()) {
         const base = uploaded;
-        logProgress(`上传 ${file.name}（${VAP.formatBytes(file.size)}）`);
         await VAP.api.uploadFile(collection.id, file, undefined, (loaded) => {
           const done = base + loaded;
-          setProgress((done / Math.max(1, totalBytes)) * 20, `上传 ${file.name}：${VAP.formatBytes(done)} / ${VAP.formatBytes(totalBytes)}`);
+          setProgress((done / Math.max(1, totalBytes)) * 18, `上传 ${file.name}：${VAP.formatBytes(done)} / ${VAP.formatBytes(totalBytes)}`, 'inspect');
         });
         uploaded += file.size;
-        logProgress(`已上传 ${index + 1}/${String(files.length)}：${file.name}`);
+        logProgress(`已上传 ${String(index + 1)}/${String(files.length)}：${file.name}`);
       }
-      setProgress(22, '上传完成，开始解析');
+      setProgress(20, '上传完成，开始解析', 'inspect');
       const started = await VAP.api.postJson(`/jobs/${collection.id}/start`, {});
       await trackJob(started.id ?? collection.id);
     } catch (error) {
@@ -140,11 +204,10 @@
     }
     setBusy(true);
     clearAlerts();
-    el.progressWrap.hidden = false;
-    el.progressLog.replaceChildren();
+    showProgress();
     try {
       logProgress(`提交路径分析：${path}`);
-      setProgress(8, '服务端读取并校验文件');
+      setProgress(6, '服务端读取并校验文件', 'inspect');
       const created = await VAP.api.postJson('/jobs', { path, label: path.split(/[\\/]/).pop() });
       await trackJob(created.id);
     } catch (error) {
@@ -153,47 +216,46 @@
     }
   }
 
-  /** Poll a job until it settles, then load the dataset. */
+  /** Poll a job, driving the staged progress bar, then load the dataset. */
   async function trackJob(jobId) {
     try {
       const job = await VAP.api.waitForJob(jobId, (tick) => {
-        const percent = 20 + (tick.progress / 100) * 78;
-        setProgress(percent, `${phaseLabel(tick.phase)}：${tick.detail ?? ''}`);
+        setProgress(20 + (tick.progress / 100) * 76, tick.detail ?? '', tick.phase);
         if (tick.detail !== undefined) logProgress(`${phaseLabel(tick.phase)} · ${tick.detail}`);
       });
-      setProgress(100, '解析完成');
+      setProgress(100, '解析完成', 'analyze');
       logProgress(`解析完成：${String(job.summary?.events ?? 0)} 个事件，用时 ${String(((job.summary?.elapsedMs ?? 0) / 1000).toFixed(1))}s`);
-      showOk(`解析完成，主导瓶颈：${job.summary?.bottleneck?.label ?? '未定位'}`);
       if ((job.warnings ?? []).length > 0) showWarnings(job.warnings);
       await refreshDatasetList();
       if (job.datasetId !== undefined) await loadDataset(job.datasetId);
     } catch (error) {
-      const job = error.job;
       showError(error.message);
-      if (job !== undefined && (job.warnings ?? []).length > 0) showWarnings(job.warnings);
+      if (error.job !== undefined && (error.job.warnings ?? []).length > 0) showWarnings(error.job.warnings);
     } finally {
       setBusy(false);
     }
   }
 
-  /** Load a dataset projection and render all three modules. */
+  /** Load a dataset projection and render every step. */
   async function loadDataset(id) {
     try {
       const viewModel = await VAP.api.getDataset(id);
       state.viewModel = viewModel;
-      el.overview.hidden = false;
-      el.moduleGantt.hidden = false;
-      el.moduleShare.hidden = false;
-      el.moduleAdvice.hidden = false;
-      el.phaseSelect.value = viewModel.analysis.options.phaseOverride ?? 'auto';
+      state.collapsed = new Set(id === state.viewModel.datasetId ? state.collapsed : []);
+      clearFilters({ silent: true });
+      for (const section of [el.overview, el.moduleGantt, el.moduleShare, el.moduleAdvice]) section.hidden = false;
+      playEnter(el.overview, 'enter');
+      playEnter(el.moduleGantt, 'enter-2');
+      playEnter(el.moduleShare, 'enter-2');
+      playEnter(el.moduleAdvice, 'enter-3');
+      setPhaseSelection(viewModel.analysis.options.phaseOverride ?? 'auto');
       renderOverview();
       state.gantt.setData(viewModel);
       state.gantt.setOptions({ sortMode: el.ganttSort.value, rowLimit: Number(el.ganttLimit.value) });
-      renderGanttHint();
       renderShare();
       renderAdvice();
       markActiveDataset(id);
-      el.overview.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      el.overview.scrollIntoView({ behavior: VAP.motionEnabled() ? 'smooth' : 'auto', block: 'start' });
     } catch (error) {
       showError(error.message);
     }
@@ -203,96 +265,180 @@
     try {
       const payload = await VAP.api.listDatasets();
       state.datasets = payload.datasets ?? [];
-      el.datasetCount.textContent = String(state.datasets.length);
-      el.datasetListWrap.hidden = state.datasets.length === 0;
-      el.datasetList.replaceChildren(...state.datasets.map((entry) => h('li', { dataset: { id: entry.id } }, [
-        h('button.small.primary', { onclick: () => void loadDataset(entry.id) }, '查看'),
-        h('span', {}, entry.label ?? entry.id),
-        h('span.meta', {}, `${formatCount(entry.eventCount)} 事件 · ${formatMs(entry.windowMs ?? 0)} · ${entry.bottleneck ?? '未定位'}`),
-        h('button.small.ghost', {
-          onclick: async () => {
-            await VAP.api.deleteDataset(entry.id);
-            if (state.viewModel?.datasetId === entry.id) resetView();
-            await refreshDatasetList();
-          },
-        }, '删除'),
+      el.datasetRow.hidden = state.datasets.length === 0;
+      el.datasetList.replaceChildren(...state.datasets.map((entry) => h('button', {
+        type: 'button',
+        dataset: { id: entry.id },
+        title: `${entry.label} · ${formatCount(entry.eventCount)} 事件 · ${entry.bottleneck ?? '未定位'}`,
+        onclick: () => void loadDataset(entry.id),
+      }, [
+        h('span.dot'),
+        h('span', {}, truncate(entry.label ?? entry.id, 28)),
+        h('span.hint', {}, entry.bottleneck ?? ''),
       ])));
-      if (state.datasets.length > 0 && state.viewModel === undefined) {
-        await loadDataset(state.datasets[0].id);
-      }
-    } catch (error) {
-      el.datasetListWrap.hidden = true;
-      void error;
+      if (state.datasets.length > 0 && state.viewModel === undefined) await loadDataset(state.datasets[0].id);
+    } catch {
+      el.datasetRow.hidden = true;
     }
   }
 
   function markActiveDataset(id) {
-    for (const item of el.datasetList.querySelectorAll('li')) {
-      item.classList.toggle('active', item.dataset.id === id);
-    }
+    for (const item of el.datasetList.children) item.classList.toggle('active', item.dataset.id === id);
   }
 
-  function resetView() {
-    state.viewModel = undefined;
-    el.overview.hidden = true;
-    el.moduleGantt.hidden = true;
-    el.moduleShare.hidden = true;
-    el.moduleAdvice.hidden = true;
-  }
-
-  // ── overview ────────────────────────────────────────────────────────────
+  // ── overview (verdict first, then actions) ──────────────────────────────
 
   function renderOverview() {
     const viewModel = state.viewModel;
     const analysis = viewModel.analysis;
     const indicator = analysis.indicators;
+    const bottleneck = analysis.bottleneck;
+
+    el.verdictBadge.style.background = BOTTLENECK_COLORS[bottleneck.id] ?? '#666';
+    el.verdictBadge.textContent = bottleneck.short ?? bottleneck.label;
+    el.verdictSummary.textContent = bottleneck.summary;
+    el.verdictMeta.textContent = `${bottleneck.scopeLabel ?? PHASE_LABELS[bottleneck.scope] ?? '全量窗口'} · 阶段划分 ${viewModel.phases.sourceLabel}（置信度 ${viewModel.phases.confidence}）`;
+    animateNumber({
+      to: bottleneck.score,
+      onFrame: (value) => { el.verdictScore.textContent = String(Math.round(value)); },
+    });
+
     const kpis = [
-      { k: '采集窗口', v: formatMs(viewModel.meta.wallUs / 1000), s: `${formatCount(viewModel.meta.eventCount)} 个事件` },
-      { k: 'NPU 忙碌率', v: formatPct(indicator.deviceBusyPct), s: `空闲 ${formatPct(indicator.idlePct)}` },
-      { k: 'Host 忙占比', v: formatPct(indicator.hostBusyPct), s: `独占 ${formatPct(indicator.hostOnlyPct)}` },
-      { k: '通信占设备', v: formatPct(indicator.commPctOfDevice), s: `未掩盖 ${formatPct(indicator.commExposedPct)}` },
-      { k: '设备侧拷贝', v: formatPct(indicator.copyPct), s: `D2H ${formatUs(indicator.d2hPerStepUs)}/步` },
-      { k: '推理步', v: String(indicator.stepCount), s: `平均 ${formatUs(indicator.avgStepUs)}` },
-      { k: '算子数', v: formatCount(viewModel.meta.counts.operators), s: `rank ${String(viewModel.meta.counts.ranks || 1)}` },
-      { k: '保守收益', v: formatPct(analysis.steps.benefit.combined.conservativePct), s: `乐观 ${formatPct(analysis.steps.benefit.combined.optimisticPct)}` },
+      { k: '采集窗口', v: formatMs(viewModel.meta.wallUs / 1000), s: `${formatCount(viewModel.meta.eventCount)} 事件 · ${String(indicator.stepCount)} 步`, meter: undefined },
+      { k: 'NPU 忙碌率', v: formatPct(indicator.deviceBusyPct), s: `空闲 ${formatPct(indicator.idlePct)}`, meter: indicator.deviceBusyPct },
+      { k: 'Host 独占/步', v: formatUs(indicator.hostExclusivePerStepUs), s: `Host 忙 ${formatPct(indicator.hostBusyPct)} · 派发 ${indicator.dispatchPerStep.toFixed(0)} 个/步`, meter: indicator.hostOnlyPct },
+      { k: '通信未掩盖', v: formatPct(indicator.commExposedPct), s: `通信占设备 ${formatPct(indicator.commPctOfDevice)} · D2H ${formatUs(indicator.d2hPerStepUs)}/步`, meter: indicator.commExposedPct },
     ];
     el.kpis.replaceChildren(...kpis.map((item) => h('div.kpi', {}, [
       h('div.k', {}, item.k),
       h('div.v', {}, item.v),
       h('div.s', {}, item.s),
+      item.meter === undefined ? undefined : h('div.bar', {}, [h('i', { dataset: { meter: String(Math.min(100, item.meter)) } })]),
     ])));
 
-    const bottleneck = analysis.bottleneck;
-    el.bottleneckBanner.hidden = false;
-    el.bottleneckBanner.replaceChildren(
-      h('span.badge', { style: `background:${BOTTLENECK_COLORS[bottleneck.id] ?? '#666'}` }, bottleneck.short ?? bottleneck.label),
+    const actions = VAP.advice.topActions(analysis, 3);
+    el.conclusionsNote.textContent = actions.length === 0 ? '（当前没有可执行项）' : '点击右侧按钮可跳到对应证据';
+    el.conclusions.replaceChildren(...actions.map((action) => h('li', {}, [
+      h(`span.pri.${priorityClass(action.priority)}`, {}, action.priority),
       h('div.text', {}, [
-        h('div', {}, bottleneck.summary),
-        h('div.hint', {}, `得分 ${bottleneck.score.toFixed(0)}/100 · 作用范围 ${bottleneck.scopeLabel ?? PHASE_LABELS[bottleneck.scope] ?? '全量窗口'} · 阶段划分来源：${viewModel.phases.sourceLabel}（置信度 ${viewModel.phases.confidence}）`),
+        h('div', {}, action.title),
+        h('div.hint', {}, [
+          action.phase.map((phase) => PHASE_LABELS[phase] ?? phase).join('/'),
+          action.gainPct === undefined ? '' : ` · 预期收益 ${formatPct(action.gainPct)}`,
+          action.confidence === 'low' ? '（经验区间）' : '',
+        ].join('')),
       ]),
-    );
+      h('button.link', {
+        type: 'button',
+        onclick: () => focusAdvice(action.id),
+      }, '查看方案'),
+    ])));
+
+    animateMeters(el.overview);
+  }
+
+  /** The three highest-priority advice cards, as jump targets from the overview. */
+  function focusAdvice(adviceId) {
+    el.moduleAdvice.scrollIntoView({ behavior: VAP.motionEnabled() ? 'smooth' : 'auto', block: 'start' });
+    const card = el.adviceChain.querySelector(`[data-advice-id="${adviceId}"]`);
+    if (card === null) return;
+    // Open the collapsed step that holds the card, then flash it.
+    const step = card.closest('.chain-step');
+    const body = step?.querySelector('.chain-body');
+    if (body !== null && body !== undefined && body.hidden) {
+      body.hidden = false;
+      step.classList.remove('collapsed');
+      step.querySelector('.chain-head')?.setAttribute('aria-expanded', 'true');
+    }
+    card.classList.remove('enter');
+    void card.offsetWidth;
+    card.classList.add('enter');
+    card.scrollIntoView({ behavior: VAP.motionEnabled() ? 'smooth' : 'auto', block: 'center' });
   }
 
   // ── module 1 ────────────────────────────────────────────────────────────
 
   function renderLegend() {
-    el.ganttLegend.replaceChildren(...Object.entries(VAP.CATEGORY_LABELS).map(([id, label]) => h('span', {}, [
-      h('i', { style: `background:${VAP.CATEGORY_COLORS[id]}` }),
-      label,
-    ])));
+    el.ganttLegend.replaceChildren(...Object.entries(VAP.CATEGORY_LABELS).map(([id, label]) => {
+      const chip = h('button.chip', { type: 'button', dataset: { cat: id }, 'aria-pressed': 'true', title: `只看/隐藏${label}` }, [
+        h('i', { style: `background:${VAP.CATEGORY_COLORS[id]}` }),
+        label,
+      ]);
+      chip.addEventListener('click', () => {
+        const pressed = chip.getAttribute('aria-pressed') === 'true';
+        chip.setAttribute('aria-pressed', pressed ? 'false' : 'true');
+        state.gantt.toggleCategory(id);
+        syncCategoryHighlight();
+      });
+      return chip;
+    }));
   }
 
-  function renderGanttHint() {
-    const viewModel = state.viewModel;
-    if (viewModel === undefined) return;
-    const timeline = viewModel.timeline;
-    const parts = [
-      `共 ${formatCount(viewModel.meta.eventCount)} 个事件；视图下发 ${formatCount(timeline.shippedEvents)} 个算子条（预算 ${formatCount(timeline.eventBudget)}）`,
-      '滚轮缩放 / 拖拽平移 / 双击重置 / 悬停查看详情 / 点击算子条筛选',
-    ];
-    if (timeline.truncated) parts.push('部分算子行做了视图抽样（行内优先保留耗时最长的算子条），累计耗时统计不受影响');
-    if (viewModel.meta.sampling?.applied === true) parts.push(`trace 解析阶段已采样：${viewModel.meta.sampling.strategy}（步长 ${String(viewModel.meta.sampling.stride)}）`);
-    el.ganttHint.textContent = parts.join(' · ');
+  /** After the swimlane changes its category filter, keep the donut in sync. */
+  function syncCategoryHighlight() {
+    const visible = [...el.ganttLegend.querySelectorAll('[data-cat]')]
+      .filter((chip) => chip.getAttribute('aria-pressed') === 'true')
+      .map((chip) => chip.dataset.cat);
+    state.filters.category = visible.length === 1 ? visible[0] : undefined;
+    renderFilters();
+    VAP.charts.applyHighlight(el.pieHost.firstChild, { category: state.filters.category });
+    VAP.charts.applyHighlight(el.barHost.firstChild, state.filters);
+  }
+
+  function renderFilters() {
+    const chips = [];
+    if (state.filters.operator !== undefined) {
+      chips.push(filterTag(`算子：${truncate(state.filters.operator, 26)}`, () => {
+        state.gantt.filterBy(undefined);
+      }));
+    }
+    if (state.filters.category !== undefined) {
+      chips.push(filterTag(`类别：${VAP.CATEGORY_LABELS[state.filters.category] ?? state.filters.category}`, () => {
+        for (const chip of el.ganttLegend.querySelectorAll('[data-cat]')) chip.setAttribute('aria-pressed', 'true');
+        state.gantt.setCategories(Object.keys(VAP.CATEGORY_LABELS));
+        state.filters.category = undefined;
+        renderFilters();
+        VAP.charts.applyHighlight(el.pieHost.firstChild, {});
+        VAP.charts.applyHighlight(el.barHost.firstChild, state.filters);
+      }));
+    }
+    if (chips.length > 1) {
+      chips.push(h('button.small.ghost', { type: 'button', onclick: () => clearFilters() }, '清除全部'));
+    }
+    el.ganttFilters.replaceChildren(...chips);
+  }
+
+  function filterTag(label, onClear) {
+    return h('span.tag', {}, [label, h('button', { type: 'button', title: '清除', onclick: onClear }, '×')]);
+  }
+
+  function clearFilters({ silent = false } = {}) {
+    state.filters = { operator: undefined, category: undefined, group: undefined };
+    if (!silent && state.gantt !== undefined) {
+      for (const chip of el.ganttLegend.querySelectorAll('[data-cat]')) chip.setAttribute('aria-pressed', 'true');
+      for (const chip of el.ganttGroups.querySelectorAll('[data-group]')) chip.setAttribute('aria-pressed', 'true');
+      state.gantt.setCategories(Object.keys(VAP.CATEGORY_LABELS));
+      state.gantt.filterBy(undefined);
+      if (state.viewModel !== undefined) renderShare();
+    }
+    el.ganttFilters.replaceChildren();
+  }
+
+  /** Apply a filter coming from a chart or an advice link. */
+  function applyFilter({ operator, category }) {
+    if (operator !== undefined) {
+      state.gantt.filterBy(operator);
+    } else if (category !== undefined) {
+      const others = Object.keys(VAP.CATEGORY_LABELS).filter((id) => id !== category);
+      // A category focus means: show only this category's lanes.
+      state.gantt.setCategories([category, ...others.filter((id) => id === 'other' && category !== 'other')]);
+      for (const chip of el.ganttLegend.querySelectorAll('[data-cat]')) {
+        chip.setAttribute('aria-pressed', chip.dataset.cat === category ? 'true' : 'false');
+      }
+      state.filters.category = category;
+      renderFilters();
+    }
+    el.moduleGantt.scrollIntoView({ behavior: VAP.motionEnabled() ? 'smooth' : 'auto', block: 'start' });
   }
 
   // ── module 2 ────────────────────────────────────────────────────────────
@@ -300,25 +446,52 @@
   function renderShare() {
     const viewModel = state.viewModel;
     if (viewModel === undefined) return;
-    const dimension = el.shareDimension.value;
+    const dimension = currentDimension();
     const scope = el.shareScope.value;
     const topN = Number(el.shareTopn.value);
 
     const categories = VAP.charts.buildCategories({ dataset: viewModel, scope });
     const pie = VAP.charts.renderPie({
       items: categories,
-      totalUs: viewModel.categories.totalUs,
       scopeLabel: scope === 'all' ? '全部算子' : scope === 'host' ? 'Host 侧' : '设备侧',
+      onSelect: ({ category }) => applyFilter({ category }),
     });
     el.pieHost.replaceChildren(pie.element);
-    el.pieLegend.replaceChildren(...pie.legend.childNodes);
-    el.pieNote.textContent = `口径：${scope === 'all' ? '全部算子' : scope === 'host' ? 'Host 侧算子' : '设备侧算子'} · 总计 ${formatUs(categories.reduce((sum, item) => sum + item.totalUs, 0))} · 占比分母为所选口径下的算子总耗时`;
+    // `children` (not `childNodes`) so the transfer is portable across DOM
+    // implementations and never depends on text-node bookkeeping.
+    el.pieLegend.replaceChildren(...[...pie.legend.children]);
+    VAP.charts.applyHighlight(pie.element, { category: state.filters.category });
 
-    const ranking = VAP.charts.buildRanking({ dataset: viewModel, dimension, scope, topN });
-    const bars = VAP.charts.renderBars({ rows: ranking.rows, dimension, maxRows: topN });
+    const ranking = VAP.charts.buildRanking({
+      dataset: viewModel,
+      dimension,
+      scope,
+      topN,
+      category: el.shareScope.value === 'device' ? undefined : undefined,
+    });
+    const bars = VAP.charts.renderBars({
+      rows: ranking.rows,
+      dimension,
+      maxRows: topN,
+      selected: state.filters.operator,
+      onSelect: ({ operator }) => applyFilter({ operator }),
+    });
     el.barHost.replaceChildren(bars.element);
-    el.barNote.textContent = `维度：${dimension === 'average' ? '单次执行耗时' : '累计总耗时'} · ${ranking.scopeLabel} · ${bars.note}`;
-    el.rankingHost.replaceChildren(VAP.charts.renderRankingTable(ranking.rows));
+    el.barNote.textContent = `${dimension === 'average' ? '单次执行耗时' : '累计总耗时'} · ${ranking.scopeLabel} · ${bars.note}`;
+    VAP.charts.applyHighlight(bars.element, state.filters);
+
+    el.rankingHost.replaceChildren(VAP.charts.renderRankingTable(ranking.rows, {
+      selected: state.filters.operator,
+      onSelect: ({ operator }) => applyFilter({ operator }),
+    }));
+    el.shareHint.textContent = state.filters.operator === undefined
+      ? '点击饼图或条形图即可回到第 3 步筛选对应算子。'
+      : `已从第 3 步带入筛选：${truncate(state.filters.operator, 30)}（点击条形图可切换）`;
+  }
+
+  function currentDimension() {
+    const pressed = el.shareDimension.querySelector('button[aria-pressed="true"]');
+    return pressed?.dataset.dimension ?? 'total';
   }
 
   // ── module 3 ────────────────────────────────────────────────────────────
@@ -326,75 +499,126 @@
   function renderAdvice() {
     const viewModel = state.viewModel;
     if (viewModel === undefined) return;
-    el.adviceChain.replaceChildren(VAP.advice.renderAdvice(viewModel, { priorityFilter: el.advicePriority.value }));
+    el.adviceChain.replaceChildren(VAP.advice.renderAdvice(viewModel, {
+      priorityFilter: el.advicePriority.value,
+      collapsed: state.collapsed,
+      onFocus: (filter) => applyFilter(filter),
+    }));
+    animateMeters(el.adviceChain);
+  }
+
+  /** Grow every meter from 0 to its target so progress reads as progress. */
+  function animateMeters(root) {
+    const meters = [...root.querySelectorAll('[data-meter]')];
+    if (meters.length === 0) return;
+    if (!VAP.motionEnabled()) {
+      for (const meter of meters) meter.style.width = `${meter.dataset.meter}%`;
+      return;
+    }
+    requestAnimationFrame(() => {
+      for (const meter of meters) meter.style.width = `${meter.dataset.meter}%`;
+    });
   }
 
   // ── controls ────────────────────────────────────────────────────────────
 
   function bindControls() {
-    el.ganttSort.addEventListener('change', () => state.gantt.setOptions({ sortMode: el.ganttSort.value }));
-    el.ganttLimit.addEventListener('change', () => state.gantt.setOptions({ rowLimit: Number(el.ganttLimit.value) }));
-    el.ganttHost.addEventListener('click', () => {
-      state.gantt.toggleGroup('host');
-      el.ganttHost.setAttribute('aria-pressed', el.ganttHost.getAttribute('aria-pressed') === 'true' ? 'false' : 'true');
+    el.motionToggle.addEventListener('change', () => {
+      const enabled = el.motionToggle.checked;
+      document.body.classList.toggle('no-motion', !enabled);
+      savePreferences({ motion: enabled });
+      if (enabled && state.viewModel !== undefined) {
+        playEnter(el.overview, 'enter');
+        state.gantt.setData(state.viewModel);
+        renderShare();
+      }
     });
-    el.ganttDevice.addEventListener('click', () => {
-      state.gantt.toggleGroup('device');
-      el.ganttDevice.setAttribute('aria-pressed', el.ganttDevice.getAttribute('aria-pressed') === 'true' ? 'false' : 'true');
+
+    el.ganttSort.addEventListener('change', () => {
+      state.gantt.setOptions({ sortMode: el.ganttSort.value });
+      savePreferences({ sortMode: el.ganttSort.value });
     });
-    for (const button of el.ganttLegend.parentElement.querySelectorAll('[data-cat]')) {
-      button.addEventListener('click', () => {
-        state.gantt.toggleCategory(button.dataset.cat);
-        button.setAttribute('aria-pressed', button.getAttribute('aria-pressed') === 'true' ? 'false' : 'true');
+    el.ganttLimit.addEventListener('change', () => {
+      state.gantt.setOptions({ rowLimit: Number(el.ganttLimit.value) });
+      savePreferences({ rowLimit: Number(el.ganttLimit.value) });
+    });
+    el.ganttPlay.addEventListener('click', () => {
+      state.playing = !state.playing;
+      el.ganttPlay.textContent = state.playing ? '⏸ 暂停' : '▶ 播放';
+      el.ganttPlay.classList.toggle('primary', !state.playing);
+      state.gantt.setPlaying(state.playing, Number(el.ganttSpeed.value));
+    });
+    el.ganttSpeed.addEventListener('change', () => {
+      if (state.playing) state.gantt.setPlaying(true, Number(el.ganttSpeed.value));
+    });
+    el.ganttZoomIn.addEventListener('click', () => state.gantt.zoom(1 / 1.5));
+    el.ganttZoomOut.addEventListener('click', () => state.gantt.zoom(1.5));
+    el.ganttReset.addEventListener('click', () => state.gantt.resetView());
+    for (const chip of el.ganttGroups.querySelectorAll('[data-group]')) {
+      chip.addEventListener('click', () => {
+        const pressed = chip.getAttribute('aria-pressed') === 'true';
+        chip.setAttribute('aria-pressed', pressed ? 'false' : 'true');
+        state.gantt.toggleGroup(chip.dataset.group);
       });
     }
-    el.ganttZoomIn.addEventListener('click', () => state.gantt.zoom(1 / 1.4));
-    el.ganttZoomOut.addEventListener('click', () => state.gantt.zoom(1.4));
-    el.ganttReset.addEventListener('click', () => state.gantt.resetView());
-    el.ganttClear.addEventListener('click', () => state.gantt.filterBy(undefined));
 
-    el.shareDimension.addEventListener('change', renderShare);
-    el.shareScope.addEventListener('change', renderShare);
-    el.shareTopn.addEventListener('change', renderShare);
+    for (const button of el.shareDimension.querySelectorAll('button[data-dimension]')) {
+      button.addEventListener('click', () => {
+        for (const sibling of el.shareDimension.querySelectorAll('button[data-dimension]')) {
+          sibling.setAttribute('aria-pressed', String(sibling === button));
+        }
+        renderShare();
+      });
+    }
+    el.shareScope.addEventListener('change', () => {
+      savePreferences({ scope: el.shareScope.value });
+      renderShare();
+    });
+    el.shareTopn.addEventListener('change', () => {
+      savePreferences({ topN: Number(el.shareTopn.value) });
+      renderShare();
+    });
     el.advicePriority.addEventListener('change', renderAdvice);
 
-    el.btnReanalyze.addEventListener('click', () => void reanalyze());
+    for (const button of el.phaseSelect.querySelectorAll('button[data-phase]')) {
+      button.addEventListener('click', () => void reanalyze(button.dataset.phase));
+    }
+
     el.btnReportMd.addEventListener('click', () => download('report.md'));
     el.btnReportPdf.addEventListener('click', () => void exportPdf());
-    el.btnDocs.addEventListener('click', () => {
-      el.moduleDocs.hidden = false;
-      el.moduleDocs.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    });
+    el.btnDocs.addEventListener('click', () => void showDocs());
+    el.btnFormats.addEventListener('click', () => void showFormats());
     el.btnAbout.addEventListener('click', () => void showAbout());
-    el.modalClose.addEventListener('click', () => {
-      el.modal.hidden = true;
-    });
+    el.modalClose.addEventListener('click', () => { el.modal.hidden = true; });
     el.modal.addEventListener('click', (event) => {
       if (event.target === el.modal) el.modal.hidden = true;
     });
   }
 
-  async function reanalyze() {
-    const viewModel = state.viewModel;
-    if (viewModel === undefined) return;
-    el.btnReanalyze.disabled = true;
-    el.btnReanalyze.textContent = '分析中…';
-    try {
-      const response = await VAP.api.analyze(viewModel.datasetId, { phaseOverride: el.phaseSelect.value });
-      viewModel.analysis = response.analysis;
-      renderOverview();
-      renderAdvice();
-      showOk(`已按“${phaseLabelOf(el.phaseSelect.value)}”口径重新分析`);
-    } catch (error) {
-      showError(error.message);
-    } finally {
-      el.btnReanalyze.disabled = false;
-      el.btnReanalyze.textContent = '重新分析';
+  function setPhaseSelection(phase) {
+    for (const button of el.phaseSelect.querySelectorAll('button[data-phase]')) {
+      button.setAttribute('aria-pressed', String(button.dataset.phase === phase));
     }
   }
 
-  function phaseLabelOf(phase) {
-    return phase === 'auto' ? '自动推断' : phase === 'prefill' ? '仅 Prefill' : '仅 Decode';
+  async function reanalyze(phase) {
+    const viewModel = state.viewModel;
+    if (viewModel === undefined || state.busy) return;
+    setPhaseSelection(phase);
+    state.busy = true;
+    el.phaseSelect.classList.add('busy');
+    try {
+      const response = await VAP.api.analyze(viewModel.datasetId, { phaseOverride: phase });
+      viewModel.analysis = response.analysis;
+      renderOverview();
+      renderAdvice();
+      playEnter(el.overview, 'enter');
+    } catch (error) {
+      showError(error.message);
+    } finally {
+      state.busy = false;
+      el.phaseSelect.classList.remove('busy');
+    }
   }
 
   function download(format) {
@@ -406,8 +630,7 @@
   /**
    * Export the PDF: capture the swimlane and both charts first, hand them to the
    * server so the printable report embeds them, then open the print view.
-   * A capture failure must never block the report — the charts are additional
-   * evidence, not the report itself.
+   * A capture failure must never block the report.
    */
   async function exportPdf() {
     const viewModel = state.viewModel;
@@ -433,44 +656,93 @@
       logProgress(`图表快照上传失败（不影响报告内容）：${error.message}`);
     } finally {
       el.btnReportPdf.disabled = false;
-      el.btnReportPdf.textContent = '导出 PDF';
+      el.btnReportPdf.textContent = 'PDF';
     }
     global.open(VAP.api.reportUrl(viewModel.datasetId, 'report.print'), '_blank', 'noopener');
   }
 
+  // ── stepper ─────────────────────────────────────────────────────────────
+
+  function bindStepper() {
+    for (const step of el.stepper.querySelectorAll('.step')) {
+      step.addEventListener('click', () => {
+        const target = document.getElementById(step.dataset.step);
+        if (target === null) return;
+        target.scrollIntoView({ behavior: VAP.motionEnabled() ? 'smooth' : 'auto', block: 'start' });
+      });
+    }
+    const sections = ['intake', 'overview', 'module-gantt', 'module-share', 'module-advice'];
+    if (typeof IntersectionObserver !== 'function') return;
+    const observer = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        const index = sections.indexOf(entry.target.id);
+        if (index === -1) continue;
+        let at = 0;
+        for (const step of el.stepper.querySelectorAll('.step')) {
+          step.classList.toggle('active', at === index);
+          step.classList.toggle('done', at < index);
+          at += 1;
+        }
+      }
+    }, { rootMargin: '-45% 0px -50% 0px' });
+    for (const id of sections) {
+      const node = document.getElementById(id);
+      if (node !== null) observer.observe(node);
+    }
+  }
+
   // ── docs / health ───────────────────────────────────────────────────────
 
-  async function loadDocs() {
+  async function showDocs() {
+    el.modalTitle.textContent = '说明 · 指标口径与产物字段';
+    if (el.modalBody.dataset.kind !== 'docs') {
+      el.modalBody.replaceChildren(h('p', {}, '加载中…'));
+      await loadDocs(true);
+    }
+    el.modal.hidden = false;
+  }
+
+  async function showFormats() {
+    el.modalTitle.textContent = '支持的文件与字段';
+    await loadDocs();
+    el.modal.hidden = false;
+    const anchor = el.modalBody.querySelector('.doc-item');
+    anchor?.scrollIntoView({ block: 'start' });
+  }
+
+  async function loadDocs(intoModal = false) {
     try {
       const bundle = await VAP.api.docs();
-      el.docsBody.replaceChildren(VAP.docsView.renderDocs(bundle));
+      el.modalBody.replaceChildren(VAP.docsView.renderDocs(bundle));
+      el.modalBody.dataset.kind = 'docs';
     } catch (error) {
-      el.docsBody.replaceChildren(h('p', {}, `说明文档加载失败：${error.message}`));
+      if (intoModal) el.modalBody.replaceChildren(h('p', {}, `说明文档加载失败：${error.message}`));
     }
   }
 
   async function loadHealth() {
     try {
       state.health = await VAP.api.health();
-      el.healthLine.textContent = `服务正常 · 数据集 ${String(state.health.store.datasets)}/${String(state.health.store.maxDatasets)} · 上传上限 ${VAP.formatBytes(Math.min(state.health.limits.maxUploadBytes, state.health.limits.maxInMemoryBytes))}`;
+      el.healthLine.textContent = `服务正常 · 数据集 ${String(state.health.store.datasets)}/${String(state.health.store.maxDatasets)}`;
     } catch (error) {
       el.healthLine.textContent = `健康检查失败：${error.message}`;
     }
   }
 
   async function showAbout() {
-    el.modalTitle.textContent = '关于 / 健康检查';
+    el.modalTitle.textContent = '状态与限制';
     if (state.health === undefined) await loadHealth();
-    const config = state.health?.limits ?? {};
+    el.modalBody.dataset.kind = 'about';
     el.modalBody.replaceChildren(
       VAP.docsView.renderHealth(state.health ?? {}),
       h('h4', {}, '当前限制'),
-      h('ul', {}, Object.entries(config).map(([key, value]) => h('li', {}, `${key}: ${String(value)}`))),
-      h('h4', {}, '安全与数据'),
+      h('ul', {}, Object.entries(state.health?.limits ?? {}).map(([key, value]) => h('li', {}, `${key}: ${String(value)}`))),
+      h('h4', {}, '数据与安全'),
       h('ul', {}, [
-        h('li', {}, '解析全部在 DSH 主机进程内完成，不上传任何数据到外部服务。'),
-        h('li', {}, '上传内容仅驻留内存，解析完成后即释放；数据集按空闲 TTL 自动过期。'),
-        h('li', {}, '按路径分析默认限制在会话工作区内，可在插件配置中放开（allowOutsideWorkspacePaths）。'),
+        h('li', {}, '解析全部在 DSH 主机进程内完成，不向任何外部服务上传数据。'),
+        h('li', {}, '上传内容仅驻留内存，解析完成后释放；数据集按空闲 TTL 自动过期。'),
+        h('li', {}, '按路径分析默认限制在会话工作区内。'),
       ]),
     );
     el.modal.hidden = false;
@@ -482,27 +754,41 @@
     state.busy = busy;
     el.btnPath.disabled = busy;
     el.dropzone.style.pointerEvents = busy ? 'none' : '';
-    if (!busy) {
-      el.progressWrap.hidden = false;
-    }
   }
 
-  function setProgress(percent, detail) {
+  function showProgress() {
     el.progressWrap.hidden = false;
+    el.progressWrap.classList.add('busy');
+    el.progressLog.hidden = true;
+    el.progressLog.replaceChildren();
+    el.progressLogToggle.textContent = '解析日志';
+  }
+
+  function setProgress(percent, detail, phase) {
     el.progressBar.style.width = `${String(Math.max(0, Math.min(100, percent)))}%`;
     el.progressPercent.textContent = `${String(Math.round(percent))}%`;
-    if (detail !== undefined) el.progressDetail.textContent = detail;
+    if (detail !== undefined && detail !== '') el.progressDetail.textContent = detail;
+    if (percent >= 100) el.progressWrap.classList.remove('busy');
+    if (phase !== undefined) {
+      const order = ['inspect', 'parse', 'assemble', 'analyze'];
+      const active = order.indexOf(phase);
+      for (const item of el.progressSteps.querySelectorAll('li')) {
+        const at = order.indexOf(item.dataset.phase);
+        item.classList.toggle('active', at === active);
+        item.classList.toggle('done', at < active || percent >= 100);
+      }
+    }
   }
 
   function logProgress(message) {
     const item = h('li', {}, `${new Date().toLocaleTimeString('zh-CN')}  ${message}`);
     el.progressLog.append(item);
     el.progressLog.scrollTop = el.progressLog.scrollHeight;
-    while (el.progressLog.childNodes.length > 60) el.progressLog.removeChild(el.progressLog.firstChild);
+    while (el.progressLog.childNodes.length > 80) el.progressLog.removeChild(el.progressLog.firstChild);
   }
 
   function clearAlerts() {
-    for (const box of [el.errorBox, el.warnBox, el.okBox]) {
+    for (const box of [el.errorBox, el.warnBox]) {
       box.hidden = true;
       box.replaceChildren();
     }
@@ -510,17 +796,24 @@
 
   function showError(message) {
     el.errorBox.hidden = false;
-    el.errorBox.replaceChildren(h('strong', {}, '解析失败：'), escapeHtml(message));
-  }
-
-  function showOk(message) {
-    el.okBox.hidden = false;
-    el.okBox.textContent = message;
+    el.errorBox.replaceChildren(h('strong', {}, '失败：'), escapeHtml(message));
   }
 
   function showWarnings(warnings) {
     el.warnBox.hidden = false;
-    el.warnBox.replaceChildren(h('strong', {}, `解析告警（${String(warnings.length)} 条）`), h('ul', {}, warnings.map((warning) => h('li', {}, warning))));
+    el.warnBox.replaceChildren(
+      h('strong', {}, `解析告警（${String(warnings.length)} 条）`),
+      h('ul', {}, warnings.map((warning) => h('li', {}, warning))),
+    );
+  }
+
+  function priorityClass(priority) {
+    return { 高: 'pri-high', 中: 'pri-mid', 低: 'pri-low' }[priority] ?? 'pri-mid';
+  }
+
+  function truncate(text, limit) {
+    const value = String(text ?? '');
+    return value.length <= limit ? value : `${value.slice(0, limit - 1)}…`;
   }
 
   function phaseLabel(phase) {

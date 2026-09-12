@@ -4,32 +4,34 @@
  * Canvas rather than DOM: a real profile holds thousands of bars per lane and
  * hundreds of lanes, and DOM nodes cannot be created for them at 60 fps.
  *
- * Interactions:
- *   * wheel / ctrl+wheel zoom around the cursor; drag to pan; double-click reset
- *   * hover shows the operator card (name, start, duration, call count, shapes,
- *     category, device, rank, stream, call stack)
- *   * click a bar selects that operator and filters the ranking table to it
- *   * per-category and per-group toggles hide lanes/bars
- *   * the row order follows the dataset's total-duration ranking, so the most
- *     expensive operator of each group is always at the top of its block
+ * Motion (all suppressible through `VAP.motionEnabled()`):
+ *   * bars grow in from the left when a dataset is loaded (a mask sweeps right);
+ *   * zoom and pan are tweened instead of jumping, so the eye can follow;
+ *   * selecting an operator fades the other rows out instead of hiding them;
+ *   * the time cursor can be played back, sweeping the window and lighting up
+ *     whatever is executing at that instant — this is the one animation that also
+ *     answers a question ("what is the device doing while the host is stuck?").
  *
- * The renderer is device-pixel-ratio aware and only draws what the viewport
- * shows, which is what keeps panning smooth on a sampled 150k-event timeline.
+ * Interactions: wheel scrolls rows, ctrl/⌘+wheel zooms around the cursor,
+ * shift+wheel (or drag) pans, hover shows the card, click filters to that
+ * operator, escape clears, double-click fits the window.
  */
 (function attachGantt(global) {
   'use strict';
 
   const {
     CATEGORY_COLORS, CATEGORY_LABELS, formatUs, formatCount, formatShapes, formatStack,
+    motionEnabled, tween,
   } = global.VAP;
 
   const ROW_HEIGHT = 16;
   const ROW_GAP = 3;
-  const GROUP_HEADER = 22;
-  const LEFT_GUTTER = 232;
-  const TOP_AXIS = 24;
+  const GROUP_HEADER = 20;
+  const LEFT_GUTTER = 214;
+  const TOP_AXIS = 22;
   const FONT = '11px "Segoe UI", "Microsoft YaHei", system-ui, sans-serif';
   const FONT_SMALL = '10px "Segoe UI", "Microsoft YaHei", system-ui, sans-serif';
+  const FONT_LABEL = '600 11px "Segoe UI", "Microsoft YaHei", system-ui, sans-serif';
 
   class GanttView {
     /**
@@ -37,14 +39,14 @@
      * @param {HTMLCanvasElement} options.canvas - target canvas.
      * @param {HTMLElement} options.tooltip - hover card element.
      * @param {HTMLElement} options.cursorLabel - footer coordinate label.
-     * @param {HTMLElement} options.selectionLabel - footer selection label.
+     * @param {HTMLElement} options.hintLabel - footer hint label.
      * @param {(selection: object|undefined) => void} [options.onSelect] - selection callback.
      */
-    constructor({ canvas, tooltip, cursorLabel, selectionLabel, onSelect }) {
+    constructor({ canvas, tooltip, cursorLabel, hintLabel, onSelect }) {
       this.canvas = canvas;
       this.tooltip = tooltip;
       this.cursorLabel = cursorLabel;
-      this.selectionLabel = selectionLabel;
+      this.hintLabel = hintLabel;
       this.onSelect = onSelect;
       this.ctx = canvas.getContext('2d');
 
@@ -56,18 +58,28 @@
       this.hiddenCategories = new Set();
       this.hiddenGroups = new Set();
       this.sortMode = 'total';
-      this.rowLimit = 60;
+      this.rowLimit = 40;
       this.filterName = undefined;
+      this.filterCategory = undefined;
       this.hover = undefined;
       this.dragging = undefined;
       this.rows = [];
       this.totalHeight = 0;
+      /** Entry animation progress (0 → 1) and the play cursor position. */
+      this.reveal = 1;
+      this.revealFrame = 0;
+      this.playhead = undefined;
+      this.playing = false;
+      this.playFrame = 0;
+      this.cancelTween = undefined;
 
       this.#bindEvents();
       this.resize();
     }
 
-    /** Load a dataset projection. */
+    // ── data ──────────────────────────────────────────────────────────────
+
+    /** Load a dataset projection and animate it in. */
     setData(data) {
       this.data = data;
       this.viewStart = data.meta.window.start;
@@ -75,12 +87,16 @@
       if (this.viewEnd <= this.viewStart) this.viewEnd = this.viewStart + 1;
       this.scrollY = 0;
       this.filterName = undefined;
+      this.filterCategory = undefined;
+      this.hiddenCategories.clear();
+      this.hiddenGroups.clear();
+      this.playhead = undefined;
       this.#layout();
-      this.draw();
+      this.#startReveal();
       this.#emitSelection();
     }
 
-    /** Apply the row ordering / limit controls. */
+    /** Apply row ordering / limit controls. */
     setOptions({ sortMode, rowLimit }) {
       if (sortMode !== undefined) this.sortMode = sortMode;
       if (rowLimit !== undefined) this.rowLimit = rowLimit;
@@ -88,15 +104,27 @@
       this.draw();
     }
 
-    /** Toggle a category's visibility. */
+    /** Toggle a category, driven by the interactive legend. */
     toggleCategory(category) {
+      if (category === undefined) return;
       if (this.hiddenCategories.has(category)) this.hiddenCategories.delete(category);
       else this.hiddenCategories.add(category);
       this.#layout();
       this.draw();
+      this.#emitSelection();
     }
 
-    /** Toggle a device group's visibility. */
+    /** Set the visible categories outright (used by chart → swimlane linking). */
+    setCategories(categories) {
+      this.hiddenCategories = new Set(
+        Object.keys(CATEGORY_LABELS).filter((category) => !categories.includes(category)),
+      );
+      this.#layout();
+      this.draw();
+      this.#emitSelection();
+    }
+
+    /** Toggle a device group. */
     toggleGroup(group) {
       if (this.hiddenGroups.has(group)) this.hiddenGroups.delete(group);
       else this.hiddenGroups.add(group);
@@ -104,60 +132,46 @@
       this.draw();
     }
 
-    /** Show only one operator (click-to-filter); `undefined` clears it. */
+    /** Show only one operator; `undefined` clears it. */
     filterBy(name) {
       this.filterName = name === undefined || name === '' ? undefined : name;
-      // The row list depends on the filter, so the layout must be rebuilt before
-      // the next paint (otherwise the previous rows stay on screen).
+      if (this.filterName !== undefined) {
+        // A focused operator is only useful if its row is actually visible.
+        this.hiddenCategories.clear();
+      }
       this.#layout();
       this.scrollY = Math.min(this.scrollY, this.maxScrollY);
+      this.#scrollToFiltered();
       this.draw();
       this.#emitSelection();
     }
 
-    /** Fit the whole window. */
+    /** Fit the whole window, with an eased transition when motion is on. */
     resetView() {
       if (this.data === undefined) return;
-      this.viewStart = this.data.meta.window.start;
-      this.viewEnd = this.data.meta.window.end;
-      this.draw();
-    }
-
-    /**
-     * Render the whole capture window into a PNG data URL for the PDF report.
-     *
-     * The viewport is reset, drawn, captured and restored, so the export always
-     * shows the complete timeline rather than whatever slice happened to be on
-     * screen — and the user's zoom is unchanged afterwards.
-     *
-     * @returns {string|undefined} `data:image/png;base64,…`, or undefined when no data is loaded.
-     */
-    toDataUrl() {
-      if (this.data === undefined || typeof this.canvas.toDataURL !== 'function') return undefined;
-      const savedStart = this.viewStart;
-      const savedEnd = this.viewEnd;
-      const savedScroll = this.scrollY;
-      try {
-        this.viewStart = this.data.meta.window.start;
-        this.viewEnd = this.data.meta.window.end;
-        this.scrollY = 0;
-        this.draw();
-        return this.canvas.toDataURL('image/png');
-      } catch {
-        return undefined;
-      } finally {
-        this.viewStart = savedStart;
-        this.viewEnd = savedEnd;
-        this.scrollY = savedScroll;
-        this.draw();
-      }
+      this.#animateView(this.data.meta.window.start, this.data.meta.window.end);
     }
 
     /** Zoom by a factor around the centre of the viewport. */
     zoom(factor) {
       const centre = (this.viewStart + this.viewEnd) / 2;
       this.#zoomAround(centre, factor);
-      this.draw();
+    }
+
+    /** Zoom/pan so that one operator's events fill the viewport. */
+    focusOperator(name) {
+      if (this.data === undefined) return false;
+      const row = this.rows.find((entry) => entry.kind === 'row' && entry.row.name === name)?.row
+        ?? this.data.timeline.lanes.flatMap((group) => group.rows).find((candidate) => candidate.name === name);
+      if (row === undefined) return false;
+      this.filterBy(name);
+      const events = row.events;
+      if (events.length === 0) return true;
+      const start = Math.min(...events.map((event) => event.start));
+      const end = Math.max(...events.map((event) => event.start + event.dur));
+      const pad = Math.max((end - start) * 0.08, (this.viewEnd - this.viewStart) * 0.02);
+      this.#animateView(start - pad, end + pad);
+      return true;
     }
 
     /** Resize the canvas to its CSS box at device pixel ratio. */
@@ -167,9 +181,6 @@
       const height = Number(this.canvas.getAttribute('height')) || 520;
       this.canvas.width = Math.round(width * ratio);
       this.canvas.height = Math.round(height * ratio);
-      // The canvas element's layout height must be set explicitly: assigning
-      // `canvas.height` sets the backing store, whose default CSS size would
-      // otherwise double the row area on a HiDPI display.
       this.canvas.style.height = `${String(height)}px`;
       this.ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
       this.cssWidth = width;
@@ -177,14 +188,50 @@
       this.draw();
     }
 
-    /** Maximum vertical scroll offset for the current row layout. */
+    /** @returns {number} maximum vertical scroll offset. */
     get maxScrollY() {
       return Math.max(0, this.totalHeight - (this.cssHeight - TOP_AXIS));
     }
 
+    // ── playback ──────────────────────────────────────────────────────────
+
+    /**
+     * Play the timeline: a vertical cursor sweeps the window at `speed`× real
+     * time, and events under it are highlighted. Useful for reading causality
+     * (for example: is the device idle *because* the host is inside a synchronise?).
+     *
+     * @param {boolean} playing - start or stop.
+     * @param {number} [speed] - multiplier of real time.
+     */
+    setPlaying(playing, speed = 4) {
+      this.playing = playing;
+      this.playSpeed = speed;
+      cancelAnimationFrame(this.playFrame);
+      if (!playing || this.data === undefined) {
+        this.draw();
+        return;
+      }
+      const window_ = this.data.meta.window;
+      if (this.playhead === undefined || this.playhead >= window_.end) this.playhead = window_.start;
+      const step = (now) => {
+        if (!this.playing) return;
+        const previous = this.lastFrameAt ?? now;
+        this.lastFrameAt = now;
+        // Wall-clock based so the sweep speed does not depend on frame rate:
+        // `speed` × real time, clamped per frame so a stalled tab does not jump
+        // a whole window at once.
+        const advance = Math.min(400, now - previous) * (this.playSpeed ?? speed) * 1000;
+        this.playhead = (this.playhead ?? window_.start) + advance;
+        if (this.playhead >= window_.end) this.playhead = window_.start;
+        this.draw();
+        this.playFrame = requestAnimationFrame(step);
+      };
+      this.lastFrameAt = undefined;
+      this.playFrame = requestAnimationFrame(step);
+    }
+
     // ── layout ────────────────────────────────────────────────────────────
 
-    /** Build the visible row list (group headers + operator rows). */
     #layout() {
       const rows = [];
       if (this.data === undefined) {
@@ -194,23 +241,19 @@
       }
       for (const group of this.data.timeline.lanes) {
         if (this.hiddenGroups.has(group.id)) continue;
-        rows.push({ kind: 'header', group: group.id, label: group.label, description: group.description, totalUs: group.totalUs, eventCount: group.eventCount });
+        rows.push({ kind: 'header', group: group.id, label: group.label, totalUs: group.totalUs, eventCount: group.eventCount });
         const eligible = group.rows.filter((row) => this.#rowVisible(row));
         const sorted = this.#sortRows(eligible).slice(0, this.rowLimit);
         for (const row of sorted) rows.push({ kind: 'row', group: group.id, row });
         if (eligible.length > sorted.length) {
-          rows.push({
-            kind: 'more',
-            group: group.id,
-            label: `其余 ${String(eligible.length - sorted.length)} 个算子未显示（可在工具栏把行数上调，或查看算子耗时排行表）`,
-          });
+          rows.push({ kind: 'more', group: group.id, label: `其余 ${String(eligible.length - sorted.length)} 个算子未显示（可上调行数）` });
         }
       }
       this.rows = rows;
       let y = TOP_AXIS;
       for (const entry of rows) {
         entry.y = y;
-        entry.height = entry.kind === 'row' ? ROW_HEIGHT : entry.kind === 'header' ? GROUP_HEADER : 18;
+        entry.height = entry.kind === 'row' ? ROW_HEIGHT : entry.kind === 'header' ? GROUP_HEADER : 16;
         y += entry.height + (entry.kind === 'row' ? ROW_GAP : 0);
       }
       this.totalHeight = y + 6;
@@ -233,13 +276,72 @@
       return sorted;
     }
 
+    /** Scroll the viewport so the filtered row is on screen. */
+    #scrollToFiltered() {
+      if (this.filterName === undefined) return;
+      const entry = this.rows.find((candidate) => candidate.kind === 'row' && candidate.row.name === this.filterName);
+      if (entry === undefined) return;
+      const top = entry.y - TOP_AXIS;
+      if (top < this.scrollY || top > this.scrollY + this.cssHeight - TOP_AXIS - ROW_HEIGHT) {
+        this.scrollY = Math.max(0, Math.min(this.maxScrollY, top - 40));
+      }
+    }
+
+    // ── animation ─────────────────────────────────────────────────────────
+
+    /** Sweep the timeline from left to right once, as a "loaded" cue. */
+    #startReveal() {
+      cancelAnimationFrame(this.revealFrame);
+      if (!motionEnabled()) {
+        this.reveal = 1;
+        this.draw();
+        return;
+      }
+      const started = performance.now();
+      const duration = 620;
+      const step = (now) => {
+        const progress = Math.min(1, (now - started) / duration);
+        this.reveal = 1 - (1 - progress) ** 2;
+        this.draw();
+        if (progress < 1) this.revealFrame = requestAnimationFrame(step);
+        else this.reveal = 1;
+      };
+      this.reveal = 0;
+      this.revealFrame = requestAnimationFrame(step);
+    }
+
+    /** Tween the visible window (zoom / fit / focus). */
+    #animateView(start, end) {
+      this.cancelTween?.();
+      const full = this.data?.meta.window ?? { start: 0, end: 1 };
+      const clamp = (from, to) => {
+        const span = to - from;
+        const fullSpan = Math.max(1, full.end - full.start);
+        if (span >= fullSpan) return { start: full.start, end: full.end };
+        let nextStart = from;
+        if (nextStart < full.start) nextStart = full.start;
+        if (nextStart + span > full.end) nextStart = full.end - span;
+        return { start: nextStart, end: nextStart + span };
+      };
+      const target = clamp(start, end);
+      this.cancelTween = tween({
+        from: { start: this.viewStart, end: this.viewEnd },
+        to: target,
+        duration: 260,
+        onFrame: ({ start: nextStart, end: nextEnd }) => {
+          this.viewStart = nextStart;
+          this.viewEnd = nextEnd;
+          this.draw();
+        },
+      });
+    }
+
     // ── drawing ───────────────────────────────────────────────────────────
 
     /** Draw the whole view. */
     draw() {
       const ctx = this.ctx;
       if (this.cssWidth === undefined) return;
-      ctx.clearRect(0, 0, this.cssWidth, this.cssHeight);
       const styles = getComputedStyle(document.body);
       const ink = styles.getPropertyValue('--ink').trim() || '#111';
       const ink3 = styles.getPropertyValue('--ink-3').trim() || '#888';
@@ -247,6 +349,8 @@
       const panel = styles.getPropertyValue('--panel').trim() || '#fff';
       const panel2 = styles.getPropertyValue('--panel-2').trim() || '#fafbfc';
       const accent = styles.getPropertyValue('--accent').trim() || '#1d4ed8';
+
+      ctx.clearRect(0, 0, this.cssWidth, this.cssHeight);
 
       if (this.data === undefined) {
         ctx.fillStyle = ink3;
@@ -260,15 +364,16 @@
       const span = this.viewEnd - this.viewStart || 1;
       const timeToX = (us) => plotLeft + ((us - this.viewStart) / span) * plotWidth;
 
-      // ── time axis ──
-      this.#drawAxis(ctx, { timeToX, plotLeft, plotWidth, span, ink3, line });
+      this.#drawAxis(ctx, { timeToX, plotLeft, plotWidth, ink3, line, panel });
 
-      // ── rows ──
       ctx.save();
       ctx.beginPath();
       ctx.rect(0, TOP_AXIS, this.cssWidth, this.cssHeight - TOP_AXIS);
       ctx.clip();
       ctx.translate(0, -this.scrollY);
+
+      // Reveal mask: bars left of `revealX` are painted.
+      const revealX = plotLeft + this.reveal * (plotWidth + 8);
 
       for (const entry of this.rows) {
         const top = entry.y;
@@ -278,12 +383,12 @@
           ctx.fillStyle = panel2;
           ctx.fillRect(0, top, this.cssWidth, entry.height);
           ctx.fillStyle = ink;
-          ctx.font = '600 11px "Segoe UI", "Microsoft YaHei", system-ui, sans-serif';
-          ctx.fillText(entry.label, 8, top + 15);
+          ctx.font = FONT_LABEL;
+          ctx.fillText(entry.label, 8, top + 14);
           ctx.fillStyle = ink3;
           ctx.font = FONT_SMALL;
-          const detail = `${formatUs(entry.totalUs)} · ${formatCount(entry.eventCount)} 个算子条`;
-          ctx.fillText(detail, LEFT_GUTTER - ctx.measureText(detail).width - 10, top + 15);
+          const detail = `${formatUs(entry.totalUs)} · ${formatCount(entry.eventCount)} 条`;
+          ctx.fillText(detail, LEFT_GUTTER - ctx.measureText(detail).width - 10, top + 14);
           ctx.strokeStyle = line;
           ctx.beginPath();
           ctx.moveTo(0, top + entry.height + 0.5);
@@ -294,26 +399,42 @@
         if (entry.kind === 'more') {
           ctx.fillStyle = ink3;
           ctx.font = FONT_SMALL;
-          ctx.fillText(entry.label, 12, top + 12);
+          ctx.fillText(entry.label, 12, top + 11);
           continue;
         }
-        this.#drawRow(ctx, entry, { timeToX, plotLeft, plotWidth, ink, ink3, line, accent });
+        this.#drawRow(ctx, entry, { timeToX, plotLeft, revealX, accent });
       }
 
-      // ── selection / hover guides ──
-      if (this.hover !== undefined) {
-        ctx.strokeStyle = accent;
-        ctx.setLineDash([3, 3]);
-        const x = timeToX(this.hover.event.start);
+      // Time cursor: playback head or hover guide.
+      const cursorUs = this.playhead ?? (this.hover?.event === undefined ? undefined : this.hover.event.start);
+      if (cursorUs !== undefined) {
+        const x = timeToX(cursorUs);
+        const playing = this.playhead !== undefined;
+        ctx.strokeStyle = playing ? accent : line;
+        ctx.lineWidth = playing ? 1.5 : 1;
+        ctx.setLineDash(playing ? [] : [3, 3]);
+        ctx.globalAlpha = playing ? 0.9 : 1;
         ctx.beginPath();
         ctx.moveTo(x, TOP_AXIS - this.scrollY);
         ctx.lineTo(x, this.cssHeight - this.scrollY);
         ctx.stroke();
         ctx.setLineDash([]);
+        ctx.globalAlpha = 1;
+        ctx.lineWidth = 1;
+        if (playing) {
+          ctx.fillStyle = accent;
+          ctx.font = FONT_SMALL;
+          const label = formatAxis(cursorUs - this.data.meta.window.start);
+          const width = ctx.measureText(label).width + 8;
+          const labelX = Math.min(this.cssWidth - width - 2, x + 4);
+          ctx.fillRect(labelX, TOP_AXIS - this.scrollY + 2, width, 14);
+          ctx.fillStyle = panel;
+          ctx.fillText(label, labelX + 4, TOP_AXIS - this.scrollY + 12);
+        }
       }
       ctx.restore();
 
-      // ── left gutter (drawn last so rows scroll under it) ──
+      // Left gutter last, so rows scroll underneath it.
       ctx.fillStyle = panel;
       ctx.fillRect(0, TOP_AXIS, LEFT_GUTTER, this.cssHeight - TOP_AXIS);
       ctx.save();
@@ -321,20 +442,23 @@
       ctx.rect(0, TOP_AXIS, LEFT_GUTTER, this.cssHeight - TOP_AXIS);
       ctx.clip();
       ctx.translate(0, -this.scrollY);
+      const dimmed = this.filterName !== undefined;
       for (const entry of this.rows) {
         const top = entry.y;
         if (top - this.scrollY + entry.height < TOP_AXIS) continue;
         if (top - this.scrollY > this.cssHeight) break;
         if (entry.kind !== 'row') continue;
         const row = entry.row;
-        ctx.fillStyle = this.filterName === row.name ? accent : ink;
-        ctx.font = FONT;
-        const label = truncate(row.label, 30);
-        ctx.fillText(label, 10, top + 12);
+        const selected = this.filterName === row.name;
+        ctx.globalAlpha = dimmed && !selected ? 0.45 : 1;
+        ctx.fillStyle = selected ? accent : ink;
+        ctx.font = selected ? FONT_LABEL : FONT;
+        ctx.fillText(truncate(row.label, 28), 10, top + 12);
         ctx.fillStyle = ink3;
         ctx.font = FONT_SMALL;
         const meta = `${formatUs(row.totalUs)} ×${formatCount(row.count)}`;
         ctx.fillText(meta, LEFT_GUTTER - ctx.measureText(meta).width - 10, top + 12);
+        ctx.globalAlpha = 1;
       }
       ctx.restore();
       ctx.strokeStyle = line;
@@ -342,68 +466,75 @@
       ctx.moveTo(LEFT_GUTTER + 0.5, TOP_AXIS);
       ctx.lineTo(LEFT_GUTTER + 0.5, this.cssHeight);
       ctx.stroke();
+
+      this.#drawScrollHint(ctx, ink3, line);
     }
 
-    #drawAxis(ctx, { timeToX, plotLeft, plotWidth, span, ink3, line }) {
-      ctx.fillStyle = 'var(--panel)';
-      const styles = getComputedStyle(document.body);
-      ctx.fillStyle = styles.getPropertyValue('--panel').trim() || '#fff';
+    #drawAxis(ctx, { timeToX, plotLeft, plotWidth, ink3, line, panel }) {
+      ctx.fillStyle = panel;
       ctx.fillRect(0, 0, this.cssWidth, TOP_AXIS);
-      const ticks = niceTicks(this.viewStart, this.viewEnd, Math.max(3, Math.floor(plotWidth / 110)));
+      const ticks = niceTicks(this.viewStart, this.viewEnd, Math.max(3, Math.floor(plotWidth / 120)));
       ctx.font = FONT_SMALL;
       ctx.strokeStyle = line;
       for (const tick of ticks) {
         const x = Math.round(timeToX(tick)) + 0.5;
         if (x < plotLeft) continue;
         ctx.beginPath();
-        ctx.moveTo(x, TOP_AXIS - 6);
+        ctx.moveTo(x, TOP_AXIS - 5);
         ctx.lineTo(x, this.cssHeight);
-        ctx.globalAlpha = 0.35;
+        ctx.globalAlpha = 0.3;
         ctx.stroke();
         ctx.globalAlpha = 1;
         ctx.fillStyle = ink3;
-        const label = formatAxis(tick - this.data.meta.window.start);
-        ctx.fillText(label, x + 3, 12);
+        ctx.fillText(formatAxis(tick - this.data.meta.window.start), x + 3, 11);
       }
       ctx.fillStyle = ink3;
-      ctx.fillText(`窗口 ${formatUs(span)}`, 8, 12);
+      ctx.fillText(`窗口 ${formatUs(this.viewEnd - this.viewStart)}`, 8, 11);
     }
 
-    #drawRow(ctx, entry, { timeToX, plotLeft, ink3, line, accent }) {
+    #drawRow(ctx, entry, { timeToX, plotLeft, revealX, accent }) {
       const row = entry.row;
       const top = entry.y;
       const selected = this.filterName === row.name;
       if (selected) {
-        ctx.fillStyle = 'rgba(29,78,216,0.07)';
+        ctx.fillStyle = 'rgba(29,78,216,0.08)';
         ctx.fillRect(0, top - 1, this.cssWidth, ROW_HEIGHT + 2);
       }
-      ctx.strokeStyle = line;
-      ctx.globalAlpha = 0.25;
-      ctx.beginPath();
-      ctx.moveTo(0, top + ROW_HEIGHT + 1.5);
-      ctx.lineTo(this.cssWidth, top + ROW_HEIGHT + 1.5);
-      ctx.stroke();
-      ctx.globalAlpha = 1;
-
       const color = row.overflow === true ? '#aab' : (CATEGORY_COLORS[row.category] ?? '#888');
-      const dimmed = this.hiddenCategories.has(row.category) && row.overflow !== true;
-      if (dimmed) return;
+      const dim = this.filterName !== undefined && !selected;
+      const span = this.viewEnd - this.viewStart || 1;
+      const plotWidth = this.cssWidth - LEFT_GUTTER - 8;
       for (const event of row.events) {
         const x = timeToX(event.start);
-        const width = Math.max(0.6, (event.dur / (this.viewEnd - this.viewStart || 1)) * (this.cssWidth - LEFT_GUTTER - 8));
-        if (x + width < plotLeft || x > this.cssWidth) continue;
-        const isHovered = this.hover !== undefined && this.hover.rowKey === row.key && this.hover.event === event;
-        ctx.fillStyle = color;
-        ctx.globalAlpha = isHovered ? 1 : 0.82;
+        if (x > revealX) break; // entry animation: not yet revealed
+        const width = Math.max(0.6, (event.dur / span) * plotWidth);
+        if (x + width < plotLeft) continue;
+        const hovered = this.hover !== undefined && this.hover.rowKey === row.key && this.hover.event === event;
+        const atPlayhead = this.playhead !== undefined && this.playhead >= event.start && this.playhead <= event.start + event.dur;
+        ctx.globalAlpha = dim ? 0.22 : (hovered || atPlayhead ? 1 : 0.85);
+        ctx.fillStyle = atPlayhead && !hovered ? accent : color;
         ctx.fillRect(x, top, Math.max(0.7, width), ROW_HEIGHT);
         ctx.globalAlpha = 1;
-        if (isHovered) {
+        if (hovered) {
           ctx.strokeStyle = accent;
           ctx.lineWidth = 1.5;
           ctx.strokeRect(x - 0.5, top - 0.5, Math.max(1.2, width) + 1, ROW_HEIGHT + 1);
           ctx.lineWidth = 1;
         }
       }
+    }
+
+    /** A slim scroll indicator on the right edge when rows overflow. */
+    #drawScrollHint(ctx, ink3, line) {
+      const viewport = this.cssHeight - TOP_AXIS;
+      if (this.totalHeight <= viewport) return;
+      const trackHeight = viewport - 8;
+      const thumbHeight = Math.max(24, (viewport / this.totalHeight) * trackHeight);
+      const thumbTop = TOP_AXIS + 4 + (this.scrollY / this.maxScrollY || 0) * (trackHeight - thumbHeight);
+      ctx.fillStyle = line;
+      ctx.globalAlpha = 0.7;
+      ctx.fillRect(this.cssWidth - 4, thumbTop, 3, thumbHeight);
+      ctx.globalAlpha = 1;
       void ink3;
     }
 
@@ -416,13 +547,10 @@
         event.preventDefault();
         const { x } = this.#pointer(event);
         if (event.ctrlKey || event.metaKey) {
-          // Ctrl/Cmd + wheel zooms around the cursor.
-          this.#zoomAround(this.#xToTime(x), event.deltaY > 0 ? 1.18 : 1 / 1.18);
-          this.draw();
+          this.#zoomAround(this.#xToTime(x), event.deltaY > 0 ? 1.16 : 1 / 1.16);
           return;
         }
         if (event.shiftKey || Math.abs(event.deltaX) > Math.abs(event.deltaY)) {
-          // Shift + wheel (or a horizontal trackpad) pans in time.
           const delta = (event.deltaX !== 0 ? event.deltaX : event.deltaY) / Math.max(1, this.cssWidth - LEFT_GUTTER);
           const shift = delta * (this.viewEnd - this.viewStart);
           this.viewStart += shift;
@@ -431,7 +559,6 @@
           this.draw();
           return;
         }
-        // Plain wheel scrolls the rows vertically.
         this.scrollY = Math.min(this.maxScrollY, Math.max(0, this.scrollY + event.deltaY));
         this.draw();
       }, { passive: false });
@@ -482,6 +609,11 @@
       canvas.addEventListener('dblclick', () => this.resetView());
     }
 
+    /** Escape clears the operator filter (bound by the controller). */
+    clearFilter() {
+      this.filterBy(undefined);
+    }
+
     #pointer(event) {
       const rect = this.canvas.getBoundingClientRect();
       return { x: event.clientX - rect.left, y: event.clientY - rect.top };
@@ -496,9 +628,8 @@
       const span = this.viewEnd - this.viewStart;
       const nextSpan = Math.min(Math.max(span * factor, 1), 1e9);
       const ratio = span === 0 ? 0.5 : (time - this.viewStart) / span;
-      this.viewStart = time - nextSpan * ratio;
-      this.viewEnd = this.viewStart + nextSpan;
-      this.#clampView();
+      const start = time - nextSpan * ratio;
+      this.#animateView(start, start + nextSpan);
     }
 
     #clampView() {
@@ -529,8 +660,7 @@
         if (contentY < entry.y || contentY > entry.y + ROW_HEIGHT) continue;
         const time = this.#xToTime(point.x);
         const event = entry.row.events.find((item) => time >= item.start && time <= item.start + item.dur);
-        if (event !== undefined) return { row: entry.row, event };
-        return { row: entry.row, event: undefined };
+        return { row: entry.row, event };
       }
       return undefined;
     }
@@ -538,44 +668,55 @@
     #updateHover(point) {
       if (this.data === undefined) return;
       const time = this.#xToTime(point.x);
-      this.cursorLabel.textContent = point.x >= LEFT_GUTTER
-        ? `时间 ${formatAxis(time - this.data.meta.window.start)}（绝对值 ${formatUs(time)}）`
-        : '';
+      const relative = time - this.data.meta.window.start;
+      this.cursorLabel.textContent = point.x >= LEFT_GUTTER ? `t = ${formatAxis(relative)}` : '';
+
+      // Row-level highlight even when no bar is under the cursor.
+      const contentY = point.y + this.scrollY;
+      const entry = this.rows.find((candidate) => candidate.kind === 'row'
+        && contentY >= candidate.y && contentY <= candidate.y + ROW_HEIGHT);
       const hit = this.#hitTest(point);
       this.hover = hit === undefined ? undefined : { rowKey: hit.row.key, event: hit.event, row: hit.row };
-      if (hit === undefined || hit.event === undefined) {
+
+      if (hit === undefined) {
         this.tooltip.hidden = true;
         this.draw();
         return;
       }
-      this.#renderTooltip(hit.row, hit.event, point);
+      // While playing, rows light up as the cursor crosses them and the tooltip
+      // would fight the animation for attention — the footer carries the time.
+      if (this.playhead === undefined) this.#renderTooltip(hit.row, hit.event, point, entry !== undefined);
+      else this.tooltip.hidden = true;
       this.draw();
     }
 
-    #renderTooltip(row, event, point) {
+    #renderTooltip(row, event, point, rowAligned) {
       const sample = row.sample ?? {};
       const lines = [
         ['算子', row.name],
-        ['类别', `${CATEGORY_LABELS[row.category] ?? row.category}${row.subtypeLabel === undefined ? '' : ` · ${row.subtypeLabel}`}`],
-        ['设备', `${row.group === 'host' ? 'Host（CPU）' : 'Device（昇腾 NPU）'}${sample.rank === undefined ? '' : ` · rank ${String(sample.rank)}`}${sample.stream === undefined ? '' : ` · stream ${String(sample.stream)}`}`],
-        ['开始（相对）', formatAxis(event.start - (this.data.meta.window.start ?? 0))],
-        ['开始（绝对 µs）', String((event.start + (this.data.meta.window.start ?? 0)).toFixed(1))],
-        ['本次耗时', formatUs(event.dur)],
-        ['调用次数', formatCount(row.count)],
-        ['累计耗时', `${formatUs(row.totalUs)}（均值 ${formatUs(row.avgUs)}，p95 ${formatUs(row.p95Us)}，最长 ${formatUs(row.maxUs)}）`],
+        ['类别', `${CATEGORY_LABELS[row.category] ?? row.category}${sample.subtype === undefined ? '' : ` · ${sample.subtype}`}`],
+        ['侧', `${row.group === 'host' ? 'Host（CPU）' : 'Device（昇腾 NPU）'}${sample.rank === undefined ? '' : ` · rank ${String(sample.rank)}`}`],
       ];
+      if (event !== undefined) {
+        lines.push(
+          ['开始', formatAxis(event.start - (this.data.meta.window.start ?? 0))],
+          ['本次耗时', formatUs(event.dur)],
+        );
+      }
+      lines.push(
+        ['调用次数', formatCount(row.count)],
+        ['累计', `${formatUs(row.totalUs)}（均值 ${formatUs(row.avgUs)}，p95 ${formatUs(row.p95Us)}）`],
+      );
       const opType = sample.opType ?? sample.taskType;
       if (opType !== undefined) lines.push(['OP/Task Type', String(opType)]);
       const shapesIn = formatShapes(sample.shapesIn);
       if (shapesIn !== undefined) lines.push(['输入 shape', shapesIn]);
-      const shapesOut = formatShapes(sample.shapesOut);
-      if (shapesOut !== undefined) lines.push(['输出 shape', shapesOut]);
-      if (row.waitUs > 0) lines.push(['等待时间合计', formatUs(row.waitUs)]);
       const stack = formatStack(sample.callStack);
       if (stack !== undefined) lines.push(['调用栈', stack]);
       if (row.eventsTruncated === true) {
-        lines.push(['视图抽样', `本行显示 ${formatCount(row.eventsShipped)}/${formatCount(row.eventsTotal)} 个算子条（点击可筛选该算子）`]);
+        lines.push(['视图抽样', `显示 ${formatCount(row.eventsShipped)}/${formatCount(row.eventsTotal)} 条（点击可筛选）`]);
       }
+      lines.push(['操作', rowAligned && event !== undefined ? '点击筛选该算子' : '点击行内算子条可筛选']);
 
       const body = lines.map(([key, value]) => [global.VAP.h('dt', {}, key), global.VAP.h('dd', {}, String(value))]);
       this.tooltip.replaceChildren(
@@ -591,12 +732,16 @@
     }
 
     #emitSelection() {
-      if (this.selectionLabel !== undefined) {
-        this.selectionLabel.textContent = this.filterName === undefined
-          ? '未按算子筛选（点击算子条可筛选，再次点击取消）'
-          : `仅显示算子：${this.filterName}`;
+      if (this.hintLabel !== undefined) {
+        const parts = [
+          this.filterName === undefined ? '点击算子条筛选' : `已筛选：${this.filterName}`,
+          'Ctrl/⌘+滚轮缩放 · 拖拽平移 · 双击重置 · Esc 清除',
+        ];
+        this.hintLabel.textContent = parts.join(' · ');
       }
-      if (typeof this.onSelect === 'function') this.onSelect(this.filterName);
+      if (typeof this.onSelect === 'function') {
+        this.onSelect({ operator: this.filterName, categories: Object.keys(CATEGORY_LABELS).filter((category) => !this.hiddenCategories.has(category)) });
+      }
     }
   }
 

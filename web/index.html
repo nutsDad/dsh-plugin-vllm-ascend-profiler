@@ -12,154 +12,181 @@
     <span class="logo" aria-hidden="true">昇</span>
     <div class="brand-text">
       <h1>vLLM-Ascend Profiler Analyzer</h1>
-      <p>上传 vLLM-Ascend / 昇腾 NPU profiling 产物，自动解析并输出泳道时序、耗时占比与结构化优化建议</p>
+      <p id="brand-sub">导入 profiling 产物 → 定位瓶颈 → 归因 → 行动</p>
     </div>
   </div>
   <div class="topbar-actions">
-    <button type="button" id="btn-docs" class="ghost">说明文档</button>
-    <button type="button" id="btn-about" class="ghost">关于 / 健康检查</button>
+    <label class="switch" title="关闭后页面不再播放任何过渡动画">
+      <input type="checkbox" id="motion-toggle" checked>
+      <span>动效</span>
+    </label>
+    <button type="button" id="btn-docs" class="ghost">说明</button>
+    <button type="button" id="btn-about" class="ghost">状态</button>
   </div>
 </header>
 
+<nav class="stepper" id="stepper" aria-label="分析流程">
+  <button type="button" class="step" data-step="intake"><i>1</i><span>导入产物</span></button>
+  <button type="button" class="step" data-step="overview"><i>2</i><span>概览与定位</span></button>
+  <button type="button" class="step" data-step="module-gantt"><i>3</i><span>时序取证</span></button>
+  <button type="button" class="step" data-step="module-share"><i>4</i><span>占比归因</span></button>
+  <button type="button" class="step" data-step="module-advice"><i>5</i><span>优化行动</span></button>
+  <span class="step-progress" id="step-progress" aria-hidden="true"></span>
+</nav>
+
 <main>
-  <!-- ══ 输入区 ══════════════════════════════════════════════════════════ -->
+  <!-- ══ 1 导入 ═════════════════════════════════════════════════════════ -->
   <section class="card" id="intake">
-    <h2>1 · 导入 profiling 产物</h2>
+    <div class="card-head">
+      <h2><span class="num">1</span>导入 profiling 产物</h2>
+      <button type="button" class="ghost small" id="btn-formats">支持哪些文件？</button>
+    </div>
+
     <div class="intake-grid">
       <div class="drop" id="dropzone" tabindex="0" role="button" aria-label="选择或拖入 profiling 文件">
         <input type="file" id="file-input" multiple hidden>
         <div class="drop-icon" aria-hidden="true">⇪</div>
         <p class="drop-title">点击选择，或把文件拖到这里</p>
-        <p class="drop-hint">
-          支持 <code>trace_view.json</code>、<code>kernel_details.csv</code>、<code>operator_details.csv</code>、
-          <code>op_statistic.csv</code>、<code>op_summary.csv</code>、<code>step_trace_time.csv</code>、
-          <code>api_statistic.csv</code>、<code>communication*.json</code>、<code>profiler_info_*.json</code>，
-          以及 <code>*.proto</code>/<code>*.bin</code> 与 <code>zip</code>/<code>tar.gz</code> 打包产物。
-        </p>
+        <p class="drop-hint">trace_view.json / *.csv / *.proto，或打包成 zip / tar.gz；可直接多选</p>
       </div>
       <div class="pathbox">
-        <h3>按路径分析（推荐用于 GB 级 trace）</h3>
-        <p class="hint" id="path-hint">填写会话工作区内的 profiling 文件或 <code>*_ascend_pt</code> 目录路径；服务端流式读取，不占用上传带宽。</p>
+        <label class="field-label" for="path-input">或按路径分析（推荐用于 GB 级 trace）</label>
         <div class="row">
-          <input type="text" id="path-input" placeholder="例如：D:\profiles\Qwen3-8B_1234_20260101120000_ascend_pt" spellcheck="false">
-          <button type="button" id="btn-path" class="primary">开始解析</button>
+          <input type="text" id="path-input" placeholder="D:\profiles\...\_ascend_pt" spellcheck="false">
+          <button type="button" id="btn-path" class="primary">解析</button>
         </div>
-        <label class="check"><input type="checkbox" id="phase-prefill-hint"> 该窗口只包含 Prefill 负载</label>
-        <label class="check"><input type="checkbox" id="phase-decode-hint"> 该窗口只包含 Decode 负载</label>
+        <p class="hint" id="path-hint">服务端流式读取，不占用上传带宽；默认限制在会话工作区内。</p>
       </div>
     </div>
 
     <div class="progress-wrap" id="progress-wrap" hidden>
       <div class="progress-head">
         <span id="progress-detail">准备中…</span>
-        <span id="progress-percent">0%</span>
+        <span id="progress-percent" class="mono">0%</span>
       </div>
       <div class="progress"><div class="progress-bar" id="progress-bar"></div></div>
-      <ul class="progress-log" id="progress-log"></ul>
+      <ol class="progress-steps" id="progress-steps">
+        <li data-phase="inspect">校验</li>
+        <li data-phase="parse">解析</li>
+        <li data-phase="assemble">汇总</li>
+        <li data-phase="analyze">分析</li>
+      </ol>
+      <button type="button" class="ghost small" id="progress-log-toggle">解析日志</button>
+      <ul class="progress-log" id="progress-log" hidden></ul>
     </div>
 
     <div class="alert error" id="error-box" hidden></div>
     <div class="alert warn" id="warn-box" hidden></div>
-    <div class="alert ok" id="ok-box" hidden></div>
 
-    <details class="dataset-list" id="dataset-list-wrap">
-      <summary>已解析数据集 <span id="dataset-count">0</span></summary>
-      <ul id="dataset-list"></ul>
-    </details>
+    <div class="dataset-row" id="dataset-row" hidden>
+      <span class="hint">已解析数据集</span>
+      <div class="dataset-list" id="dataset-list"></div>
+    </div>
   </section>
 
-  <!-- ══ 数据集摘要 + 全局控制 ═══════════════════════════════════════════ -->
+  <!-- ══ 2 概览与定位 ══════════════════════════════════════════════════ -->
   <section class="card" id="overview" hidden>
-    <div class="overview-head">
-      <h2>2 · 数据集摘要</h2>
-      <div class="overview-actions">
-        <label class="select">
-          阶段口径
-          <select id="phase-select">
-            <option value="auto">自动推断</option>
-            <option value="prefill">仅 Prefill</option>
-            <option value="decode">仅 Decode</option>
-          </select>
-        </label>
-        <button type="button" id="btn-reanalyze" class="primary">重新分析</button>
-        <button type="button" id="btn-report-md" class="ghost">导出 Markdown</button>
-        <button type="button" id="btn-report-pdf" class="ghost">导出 PDF</button>
+    <div class="card-head">
+      <h2><span class="num">2</span>概览与定位</h2>
+      <div class="card-tools">
+        <div class="segmented" id="phase-select" role="group" aria-label="阶段口径">
+          <button type="button" data-phase="auto" aria-pressed="true">自动推断</button>
+          <button type="button" data-phase="prefill" aria-pressed="false">仅 Prefill</button>
+          <button type="button" data-phase="decode" aria-pressed="false">仅 Decode</button>
+        </div>
+        <button type="button" id="btn-report-md" class="ghost">Markdown</button>
+        <button type="button" id="btn-report-pdf" class="ghost">PDF</button>
       </div>
     </div>
+
+    <div class="verdict" id="verdict">
+      <span class="badge" id="verdict-badge">—</span>
+      <div class="verdict-text">
+        <p id="verdict-summary">—</p>
+        <p class="hint" id="verdict-meta"></p>
+      </div>
+      <div class="verdict-score"><b id="verdict-score">0</b><span class="hint">/100 证据强度</span></div>
+    </div>
+
     <div class="kpis" id="kpis"></div>
-    <div class="bottleneck-banner" id="bottleneck-banner" hidden></div>
+
+    <div class="conclusions">
+      <h3>优先动作（按优先级）<span class="hint" id="conclusions-note"></span></h3>
+      <ol class="conclusion-list" id="conclusions"></ol>
+    </div>
   </section>
 
-  <!-- ══ 模块一 ═════════════════════════════════════════════════════════ -->
+  <!-- ══ 3 时序取证 ════════════════════════════════════════════════════ -->
   <section class="card" id="module-gantt" hidden>
-    <div class="module-head">
-      <h2>模块一 · Host / Device 算子执行泳道图</h2>
-      <div class="module-tools">
-        <div class="legend" id="gantt-legend"></div>
-        <div class="tool-group">
-          <button type="button" data-cat="compute" class="chip" aria-pressed="true">计算</button>
-          <button type="button" data-cat="comm" class="chip" aria-pressed="true">通信</button>
-          <button type="button" data-cat="copy" class="chip" aria-pressed="true">拷贝</button>
-          <button type="button" data-cat="schedule" class="chip" aria-pressed="true">调度</button>
-          <button type="button" data-cat="other" class="chip" aria-pressed="true">其他</button>
-        </div>
-        <div class="tool-group">
-          <button type="button" id="gantt-host" class="chip" aria-pressed="true">Host 泳道</button>
-          <button type="button" id="gantt-device" class="chip" aria-pressed="true">Device 泳道</button>
-        </div>
-        <div class="tool-group">
-          <button type="button" id="gantt-zoom-in" class="chip">放大 +</button>
-          <button type="button" id="gantt-zoom-out" class="chip">缩小 −</button>
-          <button type="button" id="gantt-reset" class="chip">重置视图</button>
-        </div>
-        <label class="select small">
-          <select id="gantt-sort">
-            <option value="total">按累计耗时排序</option>
-            <option value="count">按调用次数排序</option>
-            <option value="name">按算子名排序</option>
-            <option value="max">按单次最长排序</option>
+    <div class="card-head">
+      <h2><span class="num">3</span>Host / Device 算子执行泳道图</h2>
+      <div class="card-tools">
+        <button type="button" id="gantt-play" class="primary small" aria-label="播放时间游标">▶ 播放</button>
+        <label class="select small" title="播放速度">速度
+          <select id="gantt-speed">
+            <option value="1">1×</option>
+            <option value="4" selected>4×</option>
+            <option value="12">12×</option>
           </select>
         </label>
-        <label class="select small">顶部算子行数
+        <span class="tool-divider" aria-hidden="true"></span>
+        <button type="button" id="gantt-zoom-out" class="icon" title="缩小">−</button>
+        <button type="button" id="gantt-zoom-in" class="icon" title="放大">+</button>
+        <button type="button" id="gantt-reset" class="icon" title="重置视图">⤢</button>
+        <label class="select small">排序
+          <select id="gantt-sort">
+            <option value="total">累计耗时</option>
+            <option value="count">调用次数</option>
+            <option value="name">算子名</option>
+            <option value="max">单次最长</option>
+          </select>
+        </label>
+        <label class="select small">行数
           <select id="gantt-limit">
-            <option value="30">30</option>
-            <option value="60" selected>60</option>
-            <option value="120">120</option>
-            <option value="240">240</option>
+            <option value="20">20</option>
+            <option value="40" selected>40</option>
+            <option value="80">80</option>
+            <option value="160">160</option>
           </select>
         </label>
       </div>
     </div>
-    <p class="hint" id="gantt-hint"></p>
+
+    <div class="filter-bar">
+      <!-- 图例即筛选器：点击过滤，避免图例与控件两套 UI -->
+      <div class="legend" id="gantt-legend" role="group" aria-label="按算子类别过滤"></div>
+      <span class="tool-divider" aria-hidden="true"></span>
+      <div class="legend" id="gantt-groups" role="group" aria-label="按侧过滤">
+        <button type="button" class="chip" data-group="host" aria-pressed="true">Host</button>
+        <button type="button" class="chip" data-group="device" aria-pressed="true">Device</button>
+      </div>
+      <div class="active-filters" id="gantt-filters"></div>
+    </div>
+
     <div class="gantt-shell">
       <canvas id="gantt-canvas" height="520"></canvas>
       <div class="gantt-tooltip" id="gantt-tooltip" hidden></div>
     </div>
     <div class="gantt-foot">
-      <span id="gantt-cursor"></span>
-      <span id="gantt-selection"></span>
-      <button type="button" id="gantt-clear" class="ghost small" hidden>清除选中筛选</button>
+      <span id="gantt-cursor" class="mono"></span>
+      <span id="gantt-hint" class="hint"></span>
     </div>
   </section>
 
-  <!-- ══ 模块二 ═════════════════════════════════════════════════════════ -->
+  <!-- ══ 4 占比归因 ════════════════════════════════════════════════════ -->
   <section class="card" id="module-share" hidden>
-    <div class="module-head">
-      <h2>模块二 · 算子耗时占比</h2>
-      <div class="module-tools">
-        <label class="select small">
-          统计维度
-          <select id="share-dimension">
-            <option value="average">单次执行耗时</option>
-            <option value="total" selected>累计总耗时</option>
-          </select>
-        </label>
-        <label class="select small">
-          饼图口径
+    <div class="card-head">
+      <h2><span class="num">4</span>算子耗时占比</h2>
+      <div class="card-tools">
+        <div class="segmented" id="share-dimension" role="group" aria-label="统计维度">
+          <button type="button" data-dimension="total" aria-pressed="true">累计总耗时</button>
+          <button type="button" data-dimension="average" aria-pressed="false">单次执行耗时</button>
+        </div>
+        <label class="select small">口径
           <select id="share-scope">
-            <option value="device" selected>设备侧算子</option>
-            <option value="all">全部算子（含 Host）</option>
-            <option value="host">Host 侧算子</option>
+            <option value="device" selected>设备侧</option>
+            <option value="all">全部</option>
+            <option value="host">Host 侧</option>
           </select>
         </label>
         <label class="select small">TopN
@@ -167,37 +194,37 @@
             <option value="10">10</option>
             <option value="20" selected>20</option>
             <option value="30">30</option>
-            <option value="50">50</option>
           </select>
         </label>
       </div>
     </div>
+    <p class="hint" id="share-hint">点击饼图或条形图即可回到第 3 步筛选对应算子。</p>
+
     <div class="charts">
       <figure class="chart-card">
-        <figcaption>算子大类总耗时占比 <span class="hint" id="pie-note"></span></figcaption>
+        <figcaption>算子大类占比</figcaption>
         <div class="pie-wrap">
           <div class="pie-host" id="pie-host"></div>
           <ul class="pie-legend" id="pie-legend"></ul>
         </div>
       </figure>
       <figure class="chart-card">
-        <figcaption>TopN 算子耗时排行 <span class="hint" id="bar-note"></span></figcaption>
+        <figcaption>TopN 耗时排行 <span class="hint" id="bar-note"></span></figcaption>
         <div class="bar-wrap" id="bar-host"></div>
       </figure>
     </div>
-    <details class="table-details">
-      <summary>查看排行数据表</summary>
+    <details class="table-details" id="ranking-details">
+      <summary>排行数据表</summary>
       <div class="table-scroll" id="ranking-host"></div>
     </details>
   </section>
 
-  <!-- ══ 模块三 ═════════════════════════════════════════════════════════ -->
+  <!-- ══ 5 优化行动 ════════════════════════════════════════════════════ -->
   <section class="card" id="module-advice" hidden>
-    <div class="module-head">
-      <h2>模块三 · 结构化性能优化建议</h2>
-      <div class="module-tools">
-        <label class="select small">
-          优先级筛选
+    <div class="card-head">
+      <h2><span class="num">5</span>结构化性能优化建议</h2>
+      <div class="card-tools">
+        <label class="select small">优先级
           <select id="advice-priority">
             <option value="all">全部</option>
             <option value="高">仅高</option>
@@ -207,12 +234,6 @@
       </div>
     </div>
     <div id="advice-chain"></div>
-  </section>
-
-  <!-- ══ 说明文档 ═══════════════════════════════════════════════════════ -->
-  <section class="card" id="module-docs" hidden>
-    <div class="module-head"><h2>说明文档 · 指标口径与产物字段</h2></div>
-    <div id="docs-body"></div>
   </section>
 </main>
 

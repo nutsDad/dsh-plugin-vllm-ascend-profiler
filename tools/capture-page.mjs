@@ -11,15 +11,13 @@
  *
  * ```sh
  * msedge --headless=new --remote-debugging-port=9222 --user-data-dir=... about:blank
- * node test/capture-page.mjs --url http://127.0.0.1:3099/vllm-ascend-profiler/ \
+ * node tools/capture-page.mjs --url http://127.0.0.1:3099/vllm-ascend-profiler/ \
  *   --out docs/screenshots --port 9222
  * ```
  *
- * Shots written: `01-intake.png`, `02-swimlane.png`, `03-share.png`,
- * `04-advice.png`, `05-full.png`, plus a dark-theme `06-dark.png` when the
- * browser supports media emulation.
- *
- * @module dsh-plugin-vllm-ascend-profiler/test/capture-page
+ * Shots written: `01-intake`, `02-overview`, `03-swimlane`, `04-share`,
+ * `05-locate`, `06-actions`, `07-benefit`, `08-full`, `09-linked-filter`,
+ * `10-dark-share`.
  */
 
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -204,6 +202,21 @@ try {
     throw error;
   }
   process.stdout.write(`rendered: ${JSON.stringify(state)}\n`);
+  // Let the entry animations finish (KPI count-up, bar grow-in, reveal sweep) so
+  // the stills show final values instead of a frame mid-animation.
+  await sleep(Number(args.settle ?? 1400));
+  // The topbar and stepper are sticky, so they would be stamped over every
+  // clipped section. Unstick them for the capture (this is a screenshot
+  // concern, not a page concern) and scroll to the top for a clean full shot.
+  await evaluate(client, `(() => {
+    for (const node of document.querySelectorAll('.topbar, .stepper')) {
+      node.dataset.originalPosition = node.style.position;
+      node.style.position = 'static';
+    }
+    window.scrollTo(0, 0);
+    return true;
+  })()`);
+  await sleep(200);
 
   const written = [];
   written.push(await captureElement(client, '#intake', join(outDir, '01-intake.png')));
@@ -217,10 +230,24 @@ try {
   written.push(await captureElement(client, '#advice-chain .chain-step:nth-of-type(5)', join(outDir, '07-benefit.png')));
   written.push(await captureFull(client, join(outDir, '08-full.png')));
 
+  // Drive one interaction to show the cross-module linkage: clicking a bar in
+  // step 4 filters step 3 and adds a chip that can be cleared.
+  const clicked = await evaluate(client, `(() => {
+    const row = document.querySelector('g.bar-row');
+    if (row === null) return 'no bar';
+    row.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    return row.getAttribute('data-operator');
+  })()`);
+  process.stdout.write(`clicked bar: ${String(clicked)}\n`);
+  await sleep(900);
+  written.push(await captureElement(client, '#module-gantt', join(outDir, '09-linked-filter.png')));
+  await evaluate(client, `document.getElementById('gantt-filters')?.querySelector('button')?.click()`);
+  await sleep(400);
+
   try {
     await client.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] });
     await sleep(600);
-    written.push(await captureElement(client, '#module-share', join(outDir, '09-dark-share.png')));
+    written.push(await captureElement(client, '#module-share', join(outDir, '10-dark-share.png')));
     await client.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }] });
   } catch {
     // Media emulation is optional.
