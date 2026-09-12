@@ -19,20 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-## Third-party notices
-
-This repository contains one third-party test fixture:
-
-* `test/fixtures/ascend-trace_view.sample.json` — a truncated prefix of
-  `profiler/msprof_analyze/test/ut/advisor/advisor_backend/timeline_advice/trace_view.json`
-  from the **Ascend/mstt** project (<https://github.com/Ascend/mstt>), which is
-  licensed under the Apache License 2.0. It is used unmodified apart from being
-  cut off mid-event (which is deliberate: it exercises the parser's tolerance
-  for an export interrupted before the closing bracket). See
-  `test/fixtures/README.md` for details.
-
-No third-party runtime code is bundled or vendored: the plugin and its page use
-only Node.js built-ins and browser-native APIs.

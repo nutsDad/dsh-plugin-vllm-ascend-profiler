@@ -351,4 +351,4 @@ node test/client-bundle.test.mjs      # 浏览器插件包的加载、注册与�
 
 ## 9. 许可
 
-MIT，见 [`LICENSE`](LICENSE)。仓库内仅有一份第三方测试夹具（来自 Apache-2.0 的 Ascend/mstt，已在 LICENSE 中标注），运行时不打包任何第三方代码。
+MIT，见 [`LICENSE`](LICENSE)。运行时不打包任何第三方代码（零依赖，只用 Node 内置模块与浏览器原生 API）；仓库内仅有一份第三方测试夹具（来自 Apache-2.0 的 Ascend/mstt），来源与授权说明见 [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md)。
