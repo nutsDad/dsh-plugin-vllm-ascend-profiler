@@ -1,1 +1,22 @@
-# placeholder; replaced by the next commit
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.log
+
+# Dependencies (the plugin itself has none; a profile may add some)
+node_modules/
+
+# Generated scenario fixtures — `node test/make-fixture.mjs` recreates them.
+# The real Ascend trace sample next to them IS committed (tests depend on it).
+test/fixtures/decode-comm-bound/
+test/fixtures/prefill-compute-bound/
+test/fixtures/host-schedule-bound/
+
+# Local DSH profiles / demo instances used while developing the plugin
+.dsh-demo/
+.dsh-test/
+.dsh-*/
+
+# Headless-browser profile used by tools/capture-page.mjs
+.edge-cdp/
+.edge-headless/

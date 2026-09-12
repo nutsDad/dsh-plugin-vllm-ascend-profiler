@@ -1,0 +1,58 @@
+{
+  "name": "dsh-plugin-vllm-ascend-profiler",
+  "version": "1.0.0",
+  "private": true,
+  "description": "vLLM-Ascend Profiler Analyzer — a DeepSeek Harness plugin that ingests vLLM-Ascend / Ascend NPU profiling artifacts, renders a standalone Host+Device swimlane / cost-share / optimization-advice surface, and exports Markdown or PDF reports.",
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "vllm-ascend",
+    "ascend",
+    "npu",
+    "profiler",
+    "tracing",
+    "performance-analysis"
+  ],
+  "license": "MIT",
+  "author": "nutsDad",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nutsDad/dsh-plugin-vllm-ascend-profiler.git"
+  },
+  "homepage": "https://github.com/nutsDad/dsh-plugin-vllm-ascend-profiler#readme",
+  "bugs": {
+    "url": "https://github.com/nutsDad/dsh-plugin-vllm-ascend-profiler/issues"
+  },
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "web",
+    "docs",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node test/all.test.mjs",
+    "fixture": "node test/make-fixture.mjs",
+    "screenshots": "node tools/capture-page.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [],
+      "external": []
+    }
+  }
+}

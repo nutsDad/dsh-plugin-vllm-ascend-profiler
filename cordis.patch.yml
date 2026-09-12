@@ -1,0 +1,53 @@
+# The dsh-plugin-vllm-ascend-profiler bundle patch.
+#
+# Applied after the profile's earlier layers (dsh-base, dsh-web-app) and before
+# the user's own cordis.patch.yml. The single row below is a dual-face row:
+#
+#   * host half  — `lib/index.js` (this package's `main`): injects `webServer`,
+#                  registers the analyzer's HTTP routes and static assets.
+#   * browser half — `lib/client.js` (this package's `./client` export), picked
+#                  up by `@deepseek-ai/dsh-client-modules` through the
+#                  `dsh.client` declaration in package.json. It contributes a
+#                  sidebar entry that opens the standalone analyzer page.
+#
+# Remove or `disabled: true` this row to unmount the plugin entirely.
+
+- insert:
+    - id: vllm-ascend-profiler
+      name: dsh-plugin-vllm-ascend-profiler
+      config:
+        # URL prefix owned by the analyzer. The standalone page lives at
+        # `<routePrefix>/` and its JSON API at `<routePrefix>/api/*`.
+        routePrefix: /vllm-ascend-profiler
+        # Upper bound for one uploaded artifact set. Larger inputs should be
+        # analyzed in place with a server-side path instead of an upload.
+        maxUploadBytes: 2147483648
+        # Event budget for the timeline module. A trace above the budget is
+        # sampled (stride sampling per lane, long operators always kept) and
+        # the response reports exactly what was dropped.
+        maxTimelineEvents: 400000
+        # Row budget across every parsed CSV artifact.
+        maxTableRows: 400000
+        # Parsed datasets kept in memory, newest first; older ones are evicted.
+        maxDatasets: 6
+        # Idle lifetime of an uploaded/parsed dataset.
+        datasetTtlMs: 3600000
+        # Allow `POST /api/jobs` with a filesystem path (directory or file)
+        # instead of an upload. Paths must stay inside the session workspace
+        # unless allowOutsideWorkspacePaths is true.
+        allowPathIngest: true
+        allowOutsideWorkspacePaths: false
+        # Optional: exact protobuf field numbers for `.proto` / `.bin` artifacts.
+        # Without it those files are decoded generically and their events are
+        # marked low-confidence. Example for a schema whose fields are
+        # `name = 1, start_us = 2, duration_us = 3`:
+        # protoFieldMap:
+        #   name: 1
+        #   start: 2
+        #   duration: 3
+        # Optional: single-chip peak throughput (TFLOP/s) used to turn profiled
+        # FLOPs into a utilisation figure. 0 leaves the figure unset.
+        peakTflops: 0
+        # Optional: per-threshold overrides, keyed by the names in
+        # lib/analysis/thresholds.js (for example hostOnlyGate: 35).
+        thresholds: {}

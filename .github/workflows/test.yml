@@ -1,0 +1,28 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The plugin targets Node 22+ (engines) and uses only built-ins.
+        node: ['22', '24']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      # Scenario fixtures are generated artifacts; this also proves the
+      # generator still runs before the suite depends on it.
+      - name: Generate scenario fixtures
+        run: node test/make-fixture.mjs
+      # One process, so the suite behaves identically under a sandbox that
+      # forbids child-process pipes and on a normal runner.
+      - name: Run test suite
+        run: node test/all.test.mjs
