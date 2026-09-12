@@ -16,8 +16,8 @@
  * ```
  *
  * Shots written: `01-intake`, `02-overview`, `03-swimlane`, `04-share`,
- * `05-locate`, `06-actions`, `07-benefit`, `08-full`, `09-linked-filter`,
- * `10-dark-share`.
+ * `05-locate`, `06-evidence`, `07-actions`, `08-benefit`, `09-full`,
+ * `10-linked-filter`, `11-dark-share`.
  */
 
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -122,8 +122,9 @@ async function waitForRender(client, attempts = 160) {
     share: document.getElementById('module-share') ? !document.getElementById('module-share').hidden : false,
     advice: document.getElementById('module-advice') ? !document.getElementById('module-advice').hidden : false,
     kpis: document.querySelectorAll('.kpi').length,
-    chainSteps: document.querySelectorAll('.chain-step').length,
-    adviceItems: document.querySelectorAll('.advice').length,
+    flowNodes: document.querySelectorAll('button.flow-node').length,
+    treemapTiles: document.querySelectorAll('g.tm-tile').length,
+    shareSegments: document.querySelectorAll('g.share-seg').length,
     ganttWidth: document.getElementById('gantt-canvas') ? document.getElementById('gantt-canvas').width : 0,
     error: document.getElementById('error-box') && !document.getElementById('error-box').hidden
       ? document.getElementById('error-box').textContent.slice(0, 160) : null,
@@ -132,11 +133,22 @@ async function waitForRender(client, attempts = 160) {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     const raw = await evaluate(client, probe);
     last = raw === undefined ? {} : JSON.parse(raw);
-    if (last.gantt === true && last.share === true && last.advice === true && last.chainSteps >= 5 && last.ganttWidth > 0) return last;
+    if (last.gantt === true && last.share === true && last.advice === true && last.flowNodes >= 5
+      && last.treemapTiles > 0 && last.shareSegments > 0 && last.ganttWidth > 0) return last;
     if (last.error !== null && last.error !== undefined) throw new Error(`page reported an error: ${last.error}`);
     await sleep(250);
   }
   throw new Error(`page did not render in time: ${JSON.stringify(last)}`);
+}
+
+/** Select one step of the reasoning chain and let its panel paint. */
+async function selectChainStep(client, step) {
+  return await evaluate(client, `(() => {
+    const node = document.querySelector('#advice-chain button.flow-node[data-node="${step}"]');
+    if (node === null) return 'missing';
+    node.click();
+    return node.querySelector('.flow-value')?.textContent ?? 'ok';
+  })()`);
 }
 
 /** Capture the full page (beyond the viewport). */
@@ -223,31 +235,42 @@ try {
   written.push(await captureElement(client, '#overview', join(outDir, '02-overview.png')));
   written.push(await captureElement(client, '#module-gantt', join(outDir, '03-swimlane.png')));
   written.push(await captureElement(client, '#module-share', join(outDir, '04-share.png')));
-  // The chain is very tall, so the readable shots are the individual steps
-  // (rendered inside the `advice-root` wrapper).
-  written.push(await captureElement(client, '#advice-chain .chain-step:nth-of-type(1)', join(outDir, '05-locate.png')));
-  written.push(await captureElement(client, '#advice-chain .chain-step:nth-of-type(4)', join(outDir, '06-actions.png')));
-  written.push(await captureElement(client, '#advice-chain .chain-step:nth-of-type(5)', join(outDir, '07-benefit.png')));
-  written.push(await captureFull(client, join(outDir, '08-full.png')));
+  // Step 5 is a flow plus one panel: each frame shows the flow (the state) above
+  // the diagram of the selected step, which is exactly how a reader meets it.
+  written.push(await captureElement(client, '#advice-chain', join(outDir, '05-locate.png')));
+  process.stdout.write(`step ② 量化证据: ${String(await selectChainStep(client, 'evidence'))}\n`);
+  await sleep(500);
+  written.push(await captureElement(client, '#advice-chain', join(outDir, '06-evidence.png')));
+  process.stdout.write(`step ④ 优化行动: ${String(await selectChainStep(client, 'actions'))}\n`);
+  await sleep(500);
+  written.push(await captureElement(client, '#advice-chain', join(outDir, '07-actions.png')));
+  process.stdout.write(`step ⑤ 预期收益: ${String(await selectChainStep(client, 'benefit'))}\n`);
+  await sleep(500);
+  written.push(await captureElement(client, '#advice-chain', join(outDir, '08-benefit.png')));
+  await selectChainStep(client, 'locate');
+  // Re-selecting redraws the panel: let the bar/gain transitions settle, or the
+  // full-page shot catches them half-grown.
+  await sleep(900);
+  written.push(await captureFull(client, join(outDir, '09-full.png')));
 
-  // Drive one interaction to show the cross-module linkage: clicking a bar in
+  // Drive one interaction to show the cross-module linkage: clicking a tile in
   // step 4 filters step 3 and adds a chip that can be cleared.
   const clicked = await evaluate(client, `(() => {
-    const row = document.querySelector('g.bar-row');
-    if (row === null) return 'no bar';
-    row.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    return row.getAttribute('data-operator');
+    const tile = document.querySelector('g.tm-tile');
+    if (tile === null) return 'no tile';
+    tile.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    return tile.getAttribute('data-operator');
   })()`);
-  process.stdout.write(`clicked bar: ${String(clicked)}\n`);
+  process.stdout.write(`clicked tile: ${String(clicked)}\n`);
   await sleep(900);
-  written.push(await captureElement(client, '#module-gantt', join(outDir, '09-linked-filter.png')));
+  written.push(await captureElement(client, '#module-gantt', join(outDir, '10-linked-filter.png')));
   await evaluate(client, `document.getElementById('gantt-filters')?.querySelector('button')?.click()`);
   await sleep(400);
 
   try {
     await client.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] });
     await sleep(600);
-    written.push(await captureElement(client, '#module-share', join(outDir, '10-dark-share.png')));
+    written.push(await captureElement(client, '#module-share', join(outDir, '11-dark-share.png')));
     await client.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }] });
   } catch {
     // Media emulation is optional.

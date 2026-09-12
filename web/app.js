@@ -60,8 +60,7 @@
           ? undefined
           : (selection.categories.length === 1 ? selection.categories[0] : undefined);
         renderFilters();
-        VAP.charts.applyHighlight(el.pieHost.firstChild, state.filters);
-        VAP.charts.applyHighlight(el.barHost.firstChild, state.filters);
+        highlightShare();
       },
     });
     renderLegend();
@@ -86,8 +85,8 @@
       'module-gantt', 'gantt-legend', 'gantt-groups', 'gantt-filters', 'gantt-play', 'gantt-speed',
       'gantt-zoom-in', 'gantt-zoom-out', 'gantt-reset', 'gantt-sort', 'gantt-limit',
       'gantt-canvas', 'gantt-tooltip', 'gantt-cursor', 'gantt-hint',
-      'module-share', 'share-dimension', 'share-scope', 'share-topn', 'share-hint',
-      'pie-host', 'pie-legend', 'bar-host', 'bar-note', 'ranking-details', 'ranking-host',
+      'module-share', 'share-dimension', 'share-scope', 'share-topn', 'share-bar-note',
+      'share-bar-host', 'share-bar-legend', 'treemap-host', 'ranking-details', 'ranking-host',
       'module-advice', 'advice-priority', 'advice-chain',
       'modal', 'modal-title', 'modal-body', 'modal-close', 'health-line',
     ];
@@ -337,23 +336,30 @@
     animateMeters(el.overview);
   }
 
-  /** The three highest-priority advice cards, as jump targets from the overview. */
+  /** Jump from an overview action into the matching card of step ④. */
   function focusAdvice(adviceId) {
     el.moduleAdvice.scrollIntoView({ behavior: VAP.motionEnabled() ? 'smooth' : 'auto', block: 'start' });
+    const items = state.viewModel?.analysis?.steps.actions.items ?? [];
+    const item = items.find((entry) => entry.id === adviceId);
+    // The cards live in step ④: select it, and widen the priority filter when it
+    // would hide the very item the user asked to see.
+    if (item !== undefined && !priorityAllows(el.advicePriority.value, item.priority)) {
+      el.advicePriority.value = 'all';
+      renderAdvice();
+    }
+    state.adviceStep = 'actions';
+    state.adviceView?.setStep('actions');
     const card = el.adviceChain.querySelector(`[data-advice-id="${adviceId}"]`);
     if (card === null) return;
-    // Open the collapsed step that holds the card, then flash it.
-    const step = card.closest('.chain-step');
-    const body = step?.querySelector('.chain-body');
-    if (body !== null && body !== undefined && body.hidden) {
-      body.hidden = false;
-      step.classList.remove('collapsed');
-      step.querySelector('.chain-head')?.setAttribute('aria-expanded', 'true');
-    }
     card.classList.remove('enter');
     void card.offsetWidth;
     card.classList.add('enter');
     card.scrollIntoView({ behavior: VAP.motionEnabled() ? 'smooth' : 'auto', block: 'center' });
+  }
+
+  /** Whether a priority-filter value keeps an item of this priority visible. */
+  function priorityAllows(value, priority) {
+    return value === undefined || value === 'all' || String(value).split(',').includes(priority);
   }
 
   // ── module 1 ────────────────────────────────────────────────────────────
@@ -374,15 +380,14 @@
     }));
   }
 
-  /** After the swimlane changes its category filter, keep the donut in sync. */
+  /** After the swimlane changes its category filter, keep the diagrams in sync. */
   function syncCategoryHighlight() {
     const visible = [...el.ganttLegend.querySelectorAll('[data-cat]')]
       .filter((chip) => chip.getAttribute('aria-pressed') === 'true')
       .map((chip) => chip.dataset.cat);
     state.filters.category = visible.length === 1 ? visible[0] : undefined;
     renderFilters();
-    VAP.charts.applyHighlight(el.pieHost.firstChild, { category: state.filters.category });
-    VAP.charts.applyHighlight(el.barHost.firstChild, state.filters);
+    highlightShare();
   }
 
   function renderFilters() {
@@ -398,8 +403,7 @@
         state.gantt.setCategories(Object.keys(VAP.CATEGORY_LABELS));
         state.filters.category = undefined;
         renderFilters();
-        VAP.charts.applyHighlight(el.pieHost.firstChild, {});
-        VAP.charts.applyHighlight(el.barHost.firstChild, state.filters);
+        highlightShare();
       }));
     }
     if (chips.length > 1) {
@@ -419,9 +423,21 @@
       for (const chip of el.ganttGroups.querySelectorAll('[data-group]')) chip.setAttribute('aria-pressed', 'true');
       state.gantt.setCategories(Object.keys(VAP.CATEGORY_LABELS));
       state.gantt.filterBy(undefined);
-      if (state.viewModel !== undefined) renderShare();
+      highlightShare();
     }
     el.ganttFilters.replaceChildren();
+  }
+
+  /**
+   * Re-apply the shared filter to the diagrams already on screen.
+   *
+   * The treemap is *not* rebuilt here: rebuilding would replay its staggered
+   * reveal on every click. Only the classes that express the selection change.
+   */
+  function highlightShare() {
+    if (state.viewModel === undefined) return;
+    VAP.charts.applyHighlight(el.shareBarHost.firstChild, { category: state.filters.category });
+    VAP.charts.applyHighlight(el.treemapHost.firstChild, state.filters);
   }
 
   /** Apply a filter coming from a chart or an advice link. */
@@ -448,45 +464,35 @@
     if (viewModel === undefined) return;
     const dimension = currentDimension();
     const scope = el.shareScope.value;
-    const topN = Number(el.shareTopn.value);
+    const tiles = Number(el.shareTopn.value);
 
+    // One composition strip for the category level, one treemap for the operator
+    // level: together they carry the whole attribution, so the section needs no
+    // explanatory prose at all.
     const categories = VAP.charts.buildCategories({ dataset: viewModel, scope });
-    const pie = VAP.charts.renderPie({
+    const strip = VAP.diagram.shareBar({
       items: categories,
-      scopeLabel: scope === 'all' ? '全部算子' : scope === 'host' ? 'Host 侧' : '设备侧',
+      selected: state.filters.category,
       onSelect: ({ category }) => applyFilter({ category }),
     });
-    el.pieHost.replaceChildren(pie.element);
-    // `children` (not `childNodes`) so the transfer is portable across DOM
-    // implementations and never depends on text-node bookkeeping.
-    el.pieLegend.replaceChildren(...[...pie.legend.children]);
-    VAP.charts.applyHighlight(pie.element, { category: state.filters.category });
+    el.shareBarHost.replaceChildren(strip.element);
+    el.shareBarLegend.replaceChildren(...[...strip.legend.children]);
+    VAP.charts.applyHighlight(strip.element, { category: state.filters.category });
+    el.shareBarNote.textContent = `${scope === 'all' ? '全部算子' : scope === 'host' ? 'Host 侧' : '设备侧'} · 合计 ${formatUs(categories.reduce((sum, item) => sum + item.totalUs, 0))}`;
 
-    const ranking = VAP.charts.buildRanking({
-      dataset: viewModel,
-      dimension,
-      scope,
-      topN,
-      category: el.shareScope.value === 'device' ? undefined : undefined,
-    });
-    const bars = VAP.charts.renderBars({
+    const ranking = VAP.charts.buildRanking({ dataset: viewModel, dimension, scope, topN: tiles });
+    const map = VAP.diagram.treemap({
       rows: ranking.rows,
       dimension,
-      maxRows: topN,
       selected: state.filters.operator,
       onSelect: ({ operator }) => applyFilter({ operator }),
     });
-    el.barHost.replaceChildren(bars.element);
-    el.barNote.textContent = `${dimension === 'average' ? '单次执行耗时' : '累计总耗时'} · ${ranking.scopeLabel} · ${bars.note}`;
-    VAP.charts.applyHighlight(bars.element, state.filters);
-
+    el.treemapHost.replaceChildren(map.element);
+    VAP.charts.applyHighlight(map.element, state.filters);
     el.rankingHost.replaceChildren(VAP.charts.renderRankingTable(ranking.rows, {
       selected: state.filters.operator,
       onSelect: ({ operator }) => applyFilter({ operator }),
     }));
-    el.shareHint.textContent = state.filters.operator === undefined
-      ? '点击饼图或条形图即可回到第 3 步筛选对应算子。'
-      : `已从第 3 步带入筛选：${truncate(state.filters.operator, 30)}（点击条形图可切换）`;
   }
 
   function currentDimension() {
@@ -499,12 +505,15 @@
   function renderAdvice() {
     const viewModel = state.viewModel;
     if (viewModel === undefined) return;
-    el.adviceChain.replaceChildren(VAP.advice.renderAdvice(viewModel, {
+    const previousStep = state.adviceView?.activeStep;
+    const view = VAP.advice.renderAdvice(viewModel, {
       priorityFilter: el.advicePriority.value,
-      collapsed: state.collapsed,
+      activeStep: state.adviceStep ?? previousStep,
+      onStep: (id) => { state.adviceStep = id; },
       onFocus: (filter) => applyFilter(filter),
-    }));
-    animateMeters(el.adviceChain);
+    });
+    state.adviceView = view;
+    el.adviceChain.replaceChildren(view.element);
   }
 
   /** Grow every meter from 0 to its target so progress reads as progress. */
@@ -628,8 +637,8 @@
   }
 
   /**
-   * Export the PDF: capture the swimlane and both charts first, hand them to the
-   * server so the printable report embeds them, then open the print view.
+   * Export the PDF: capture the swimlane and both diagrams first, hand them to
+   * the server so the printable report embeds them, then open the print view.
    * A capture failure must never block the report.
    */
   async function exportPdf() {
@@ -641,15 +650,15 @@
       const charts = {};
       const gantt = state.gantt?.toDataUrl();
       if (typeof gantt === 'string') charts['模块一 · Host/Device 算子执行泳道图（完整采集窗口）'] = gantt;
-      const pie = el.pieHost.firstChild;
-      if (pie !== null && pie !== undefined) {
-        const dataUrl = await VAP.charts.svgToPngDataUrl(pie);
-        if (typeof dataUrl === 'string') charts['模块二 · 算子大类耗时占比'] = dataUrl;
+      const strip = el.shareBarHost.firstChild;
+      if (strip !== null && strip !== undefined) {
+        const dataUrl = await VAP.charts.svgToPngDataUrl(strip);
+        if (typeof dataUrl === 'string') charts['模块二 · 算子大类耗时构成'] = dataUrl;
       }
-      const bars = el.barHost.firstChild;
-      if (bars !== null && bars !== undefined) {
-        const dataUrl = await VAP.charts.svgToPngDataUrl(bars);
-        if (typeof dataUrl === 'string') charts['模块二 · TopN 算子耗时排行'] = dataUrl;
+      const tiles = el.treemapHost.firstChild;
+      if (tiles !== null && tiles !== undefined) {
+        const dataUrl = await VAP.charts.svgToPngDataUrl(tiles);
+        if (typeof dataUrl === 'string') charts['模块二 · 算子耗时分布（面积=占比）'] = dataUrl;
       }
       await VAP.api.postCharts(viewModel.datasetId, charts);
     } catch (error) {

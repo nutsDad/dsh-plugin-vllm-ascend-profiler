@@ -426,7 +426,7 @@ function loadPage({ withHtmlIds = false, fetchImpl, noMotion = false } = {}) {
   sandbox.globalThis = sandbox;
   if (noMotion) sandbox.document.body.classList.add('no-motion');
   vm.createContext(sandbox);
-  for (const file of ['util.js', 'api.js', 'charts.js', 'gantt.js', 'docs-view.js', 'advice-view.js', 'app.js']) {
+  for (const file of ['util.js', 'api.js', 'diagram.js', 'charts.js', 'gantt.js', 'docs-view.js', 'advice-view.js', 'app.js']) {
     const source = readFileSync(join(webRoot, file), 'utf8');
     vm.runInContext(source, sandbox, { filename: file });
   }
@@ -446,23 +446,23 @@ async function loadViewModel() {
 test('every page script loads in document order without throwing', () => {
   const sandbox = loadPage();
   assert.equal(typeof sandbox.VAP.h, 'function');
-  assert.equal(typeof sandbox.VAP.charts.renderPie, 'function');
+  assert.equal(typeof sandbox.VAP.diagram.treemap, 'function');
+  assert.equal(typeof sandbox.VAP.diagram.chainFlow, 'function');
+  assert.equal(typeof sandbox.VAP.charts.buildRanking, 'function');
   assert.equal(typeof sandbox.VAP.GanttView, 'function');
   assert.equal(typeof sandbox.VAP.advice.renderAdvice, 'function');
   assert.equal(typeof sandbox.VAP.docsView.renderDocs, 'function');
 });
 
-test('module 2 renders the donut, the ranked bars, and the table', async () => {
+test('module 2 projects the categories and the ranking behind the diagrams', async () => {
   const sandbox = loadPage();
   const viewModel = await loadViewModel();
 
   for (const scope of ['all', 'device', 'host']) {
     const categories = sandbox.VAP.charts.buildCategories({ dataset: viewModel, scope });
     assert.ok(categories.length > 0, `scope ${scope} must produce categories`);
-    const pie = sandbox.VAP.charts.renderPie({ items: categories, totalUs: viewModel.categories.totalUs, scopeLabel: scope });
-    assert.equal(pie.element.tagName, 'svg');
-    assert.ok(pie.element.children.length >= categories.length, 'one slice per category');
-    assert.ok(pie.legend.children.length === categories.length);
+    assert.ok(categories.every((item) => item.totalUs > 0), 'only funded categories reach the strip');
+    assert.equal(Math.round(categories.reduce((sum, item) => sum + item.sharePct, 0)), 100, 'shares are a whole');
   }
 
   for (const dimension of ['total', 'average']) {
@@ -470,13 +470,115 @@ test('module 2 renders the donut, the ranked bars, and the table', async () => {
     assert.ok(ranking.rows.length > 0);
     assert.equal(ranking.rows[0].rank, 1);
     assert.ok(ranking.rows[0].shareOfOpsPct > 0);
-    const bars = sandbox.VAP.charts.renderBars({ rows: ranking.rows, dimension, maxRows: 20 });
-    assert.equal(bars.element.tagName, 'svg');
-    assert.ok(bars.element.children.length > ranking.rows.length, 'axis labels plus one group per row');
     const table = sandbox.VAP.charts.renderRankingTable(ranking.rows);
     assert.equal(table.tagName, 'table');
     assert.equal(table.children[1].children.length, ranking.rows.length);
   }
+});
+
+test('the composition strip splits 100% of the cost into clickable categories', async () => {
+  const sandbox = loadPage();
+  const viewModel = await loadViewModel();
+  const categories = sandbox.VAP.charts.buildCategories({ dataset: viewModel, scope: 'all' });
+  const picks = [];
+  const strip = sandbox.VAP.diagram.shareBar({ items: categories, onSelect: (pick) => picks.push(pick) });
+
+  const segments = strip.element.querySelectorAll('g.share-seg');
+  assert.equal(segments.length, categories.length, 'one segment per category');
+  const width = segments.reduce((sum, segment) => {
+    const rect = segment.querySelectorAll('rect')[0];
+    return sum + Number(rect.getAttribute('width'));
+  }, 0);
+  // Segments are inset by 2px each, so the drawn width is the viewport minus the
+  // gaps: a full composition bar, never a partial one.
+  assert.ok(Math.abs(width - (960 - categories.length * 2)) < 2, `segments must fill the strip, got ${String(width)}`);
+
+  // The legend repeats the strip and is itself a control (the smallest category
+  // would otherwise be a few pixels wide).
+  const legendButtons = strip.legend.querySelectorAll('button');
+  assert.equal(legendButtons.length, categories.length);
+  legendButtons[1].click();
+  assert.equal(picks.length, 1);
+  assert.equal(picks[0].category, categories[1].id);
+
+  // Clicking a segment reports the same category upward.
+  segments[0].dispatchEvent({ type: 'click' });
+  assert.equal(picks.length, 2);
+  assert.equal(picks[1].category, categories[0].id);
+});
+
+test('the treemap gives every operator an area proportional to its cost', async () => {
+  const sandbox = loadPage();
+  const viewModel = await loadViewModel();
+  const ranking = sandbox.VAP.charts.buildRanking({ dataset: viewModel, dimension: 'total', scope: 'all', topN: 12 });
+  const map = sandbox.VAP.diagram.treemap({ rows: ranking.rows, dimension: 'total' });
+
+  const tiles = map.element.querySelectorAll('g.tm-tile');
+  assert.equal(tiles.length, ranking.rows.length, 'every ranked operator gets a tile');
+  const canvas = 960 * 340;
+  const area = tiles.reduce((sum, tile) => {
+    const rect = tile.querySelectorAll('rect')[0];
+    return sum + Number(rect.getAttribute('width')) * Number(rect.getAttribute('height'));
+  }, 0);
+  // Squarified layout fills the box: the total tile area is the canvas area.
+  assert.ok(Math.abs(area - canvas) / canvas < 0.02, `tile area must equal the canvas area, got ${String(Math.round(area))}`);
+
+  // Area encodes cost: the top operator occupies its own share of the canvas, and
+  // the tiles are appended in ranking order.
+  const totalUs = ranking.rows.reduce((sum, row) => sum + row.totalUs, 0);
+  const first = tiles[0].querySelectorAll('rect')[0];
+  const firstArea = Number(first.getAttribute('width')) * Number(first.getAttribute('height'));
+  const expected = (ranking.rows[0].totalUs / totalUs) * canvas;
+  assert.ok(Math.abs(firstArea - expected) / expected < 0.08, `the top tile must cover its share, got ${String(Math.round(firstArea))} vs ${String(Math.round(expected))}`);
+  assert.equal(tiles[0].getAttribute('data-operator'), ranking.rows[0].name);
+});
+
+test('the evidence diagram compares each metric with its gate', async () => {
+  const sandbox = loadPage();
+  const rows = [
+    { metric: 'Host 独占占比', value: 96.5, unit: '%', threshold: 60, passed: false, category: 'schedule' },
+    { metric: 'NPU 忙碌率', value: 12.4, unit: '%', threshold: 40, passed: false, category: 'compute' },
+  ];
+  const bars = sandbox.VAP.diagram.thresholdBars({ rows });
+  const rendered = bars.element.querySelectorAll('g.tb-row');
+  assert.equal(rendered.length, rows.length, 'one row per metric');
+  const fills = rendered.map((row) => row.querySelectorAll('rect')[1].getAttribute('fill'));
+  assert.deepEqual(fills, ['var(--err)', 'var(--err)'], 'a missed gate is drawn in the failure colour');
+  for (const row of rendered) {
+    const texts = row.querySelectorAll('text').map((node) => node.textContent);
+    assert.ok(texts.some((text) => text.includes('门限')), 'the gate value is printed on the row');
+  }
+  const passing = sandbox.VAP.diagram.thresholdBars({ rows: [{ metric: 'NPU 忙碌率', value: 88, unit: '%', threshold: 40, passed: true }] });
+  assert.equal(passing.element.querySelectorAll('g.tb-row')[0].querySelectorAll('rect')[1].getAttribute('fill'), 'var(--ok)');
+  assert.equal(bars.legend.querySelectorAll('span').length, 3, 'the legend names pass, fail and gate');
+});
+
+test('the reasoning chain is a five-node flow with one number per step', async () => {
+  const sandbox = loadPage();
+  const viewModel = await loadViewModel();
+  const view = sandbox.VAP.advice.renderAdvice(viewModel, { priorityFilter: 'all' });
+  const flow = view.element.querySelector('.chain-flow');
+  const nodes = flow.querySelectorAll('button.flow-node');
+  assert.equal(nodes.length, 5, '①→⑤');
+  assert.deepEqual(nodes.map((node) => node.dataset.node), ['locate', 'evidence', 'cause', 'actions', 'benefit']);
+  assert.equal(nodes[0].getAttribute('aria-selected'), 'true', 'the first step is selected on load');
+  for (const node of nodes) {
+    assert.ok(node.querySelector('.flow-value').textContent.length > 0, 'a node must carry its own number');
+  }
+  // The gain bars are drawn (not just described) in the panels.
+  view.setStep('benefit');
+  assert.ok(view.element.querySelectorAll('.benefit-row').length > 0);
+  assert.equal(view.element.querySelectorAll('button.flow-node')[4].getAttribute('aria-selected'), 'true');
+});
+
+test('the one-line summariser never cuts a number in half', () => {
+  const sandbox = loadPage();
+  const oneLine = sandbox.VAP.diagram.oneLine;
+  // The diagrams show one sentence per item: a decimal point inside a number must
+  // not be mistaken for the end of that sentence ("Host 独占 30." is a lie).
+  assert.match(oneLine('Host 独占 30.22%，高于门限 25%。其余略。'), /30\.22%/);
+  assert.equal(oneLine('Host 独占 30.22%。其余略。'), 'Host 独占 30.22%。');
+  assert.equal(oneLine('没有句号的一句话'), '没有句号的一句话');
 });
 
 test('module 1 renders lanes for both device groups and reports sampling', async () => {
@@ -592,44 +694,51 @@ test('the time cursor can be played and stopped', async () => {
   assert.equal(view.playing, false);
 });
 
-test('module 3 renders the whole five-step chain with evidence and gains', async () => {
+test('module 3 renders every step of the reasoning chain as a diagram', async () => {
   const sandbox = loadPage();
   const viewModel = await loadViewModel();
-  const root = sandbox.VAP.advice.renderAdvice(viewModel, { priorityFilter: 'all' });
-  assert.equal(root.children.length >= 5, true, 'five chain steps');
-  const text = root.textContent;
-  assert.match(text, /瓶颈类型定位/);
-  assert.match(text, /量化证据/);
-  assert.match(text, /根因推断/);
-  assert.match(text, /可落地优化方案/);
-  assert.match(text, /预期收益/);
-  assert.match(text, /Host 独占/);
-  assert.match(text, /门限/);
-  assert.match(text, /置信度/);
-  assert.ok(!text.includes('undefined'), 'no undefined must leak into the rendered advice');
-  assert.ok(!text.includes('NaN'));
+  const view = sandbox.VAP.advice.renderAdvice(viewModel, { priorityFilter: 'all' });
+  const root = view.element;
 
-  // The recommendation cards must be real elements with the `advice` class: if
-  // the tag builder fails to parse a class token (for example a CJK priority in
-  // the class name) the card becomes an HTMLUnknownElement that no stylesheet
-  // rule matches, and the section silently loses its layout.
-  const cards = [];
-  const walk = (node) => {
-    for (const child of node.children ?? []) {
-      if (child.classList?.contains('advice')) cards.push(child);
-      walk(child);
-    }
+  // Every step is one click away, and each renders a diagram rather than prose.
+  const panels = {
+    locate: '.compare-chart',
+    evidence: 'g.tb-row',
+    cause: '.cause-row',
+    actions: '.action-block',
+    benefit: '.benefit-row',
   };
-  walk(root);
-  assert.ok(cards.length > 0, 'at least one recommendation card must render');
-  for (const card of cards) {
-    assert.equal(card.tagName, 'div', 'a recommendation card must be a real div');
-    assert.match(card.className, /advice pri-(high|mid|low)/, `unexpected card classes: ${card.className}`);
-    assert.ok(['高', '中', '低'].includes(card.dataset.priority), 'the Chinese priority must be carried as data, not as a class');
+  for (const [step, selector] of Object.entries(panels)) {
+    view.setStep(step);
+    assert.ok(root.querySelectorAll(selector).length > 0, `step ${step} must render ${selector}`);
+    const stepText = root.textContent;
+    assert.ok(!stepText.includes('undefined'), `step ${step}: no undefined must leak`);
+    assert.ok(!stepText.includes('NaN'), `step ${step}: no NaN must leak`);
   }
 
-  const highOnly = sandbox.VAP.advice.renderAdvice(viewModel, { priorityFilter: '高' });
-  assert.ok(highOnly.textContent.length <= root.textContent.length);
+  // The prose lives behind the disclosures: the default reading of each step is
+  // shapes and numbers, and every claim still has its `依据` one click away.
+  view.setStep('cause');
+  assert.ok(root.querySelectorAll('details.cause-more').length > 0, 'each mechanism keeps its evidence');
+  view.setStep('actions');
+  assert.ok(root.querySelectorAll('details.compact').length > 0, 'each action keeps its rationale');
+
+  // Action cards must be real elements carrying the priority as data: a CJK class
+  // token would produce an HTMLUnknownElement that no stylesheet rule matches, and
+  // the row would silently lose its layout.
+  const rows = root.querySelectorAll('.action-row');
+  assert.ok(rows.length > 0, 'at least one action must render');
+  for (const row of rows) {
+    assert.equal(row.tagName, 'div', 'an action row must be a real div');
+    const badge = row.querySelector('.pri');
+    assert.match(badge.className, /pri-(high|mid|low)/, `unexpected priority classes: ${badge.className}`);
+    assert.ok(['高', '中', '低'].includes(badge.textContent), 'the priority badge carries the Chinese label');
+  }
+
+  // The priority filter narrows the action list without breaking the diagram.
+  const highOnly = sandbox.VAP.advice.renderAdvice(viewModel, { priorityFilter: '高', activeStep: 'actions' });
+  assert.ok(highOnly.element.querySelectorAll('.action-row').length <= rows.length);
+  assert.ok(highOnly.element.textContent.length <= root.textContent.length);
 });
 
 test('the documentation panel renders metrics and artifact fields', async () => {
@@ -656,10 +765,14 @@ test('the advice view renders for every scenario without undefined leakage', asy
       datasetId: scenario,
       label: scenario,
     });
-    const root = sandbox.VAP.advice.renderAdvice(viewModel, {});
-    assert.ok(root.textContent.length > 500, `${scenario}: advice must be substantial`);
-    assert.ok(!root.textContent.includes('undefined'), `${scenario}: no undefined`);
-    assert.ok(!root.textContent.includes('NaN'), `${scenario}: no NaN`);
+    const view = sandbox.VAP.advice.renderAdvice(viewModel, {});
+    const root = view.element;
+    assert.ok(root.textContent.length > 200, `${scenario}: advice must state its numbers`);
+    for (const step of ['locate', 'evidence', 'cause', 'actions', 'benefit']) {
+      view.setStep(step);
+      assert.ok(!root.textContent.includes('undefined'), `${scenario}/${step}: no undefined`);
+      assert.ok(!root.textContent.includes('NaN'), `${scenario}/${step}: no NaN`);
+    }
   }
 });
 
@@ -672,7 +785,7 @@ test('the page HTML references only assets the plugin serves', () => {
     if (asset.startsWith('http') || asset.startsWith('#')) continue;
     assert.ok(served.has(asset), `index.html references ${asset}, which the plugin does not serve`);
   }
-  for (const id of ['dropzone', 'gantt-canvas', 'pie-host', 'bar-host', 'ranking-host', 'advice-chain', 'modal-body', 'stepper']) {
+  for (const id of ['dropzone', 'gantt-canvas', 'share-bar-host', 'share-bar-legend', 'treemap-host', 'ranking-host', 'advice-chain', 'modal-body', 'stepper']) {
     assert.ok(html.includes(`id="${id}"`), `index.html must define #${id}`);
   }
 });
@@ -768,9 +881,11 @@ test('booting with a dataset renders every step of the pipeline', async () => {
   assert.equal(registry.get('verdict-badge').textContent, 'Host 调度');
   const conclusions = registry.get('conclusions');
   assert.ok(conclusions.children.length > 0 && conclusions.children.length <= 3, 'three prioritised actions');
-  assert.ok(registry.get('pie-host').children.length > 0, 'donut rendered');
-  assert.ok(registry.get('bar-host').children.length > 0, 'bars rendered');
-  assert.equal(registry.get('advice-chain').querySelectorAll('.chain-step').length, 5, 'five reasoning steps');
+  assert.ok(registry.get('share-bar-host').children.length > 0, 'composition strip rendered');
+  assert.ok(registry.get('share-bar-legend').children.length >= 2, 'the strip legend names its categories');
+  assert.ok(registry.get('treemap-host').children.length > 0, 'treemap rendered');
+  assert.equal(registry.get('advice-chain').querySelectorAll('button.flow-node').length, 5, 'five reasoning steps');
+  assert.ok(registry.get('advice-chain').querySelectorAll('.compare-chart').length > 0, 'the first step renders its diagram');
   assert.match(registry.get('gantt-hint').textContent, /Ctrl\/⌘\+滚轮缩放/, 'the swimlane hint documents its controls');
   assert.equal(registry.get('verdict-score').textContent.length > 0, true);
   void sandbox;
@@ -786,13 +901,13 @@ test('a dataset warning is not shown, but a parse failure is', async () => {
   void sandbox;
 });
 
-test('clicking a bar filters the timeline and shows an active filter chip', async () => {
+test('clicking a treemap tile filters the timeline and shows an active filter chip', async () => {
   await bootPage();
-  const barHost = registry.get('bar-host');
-  const rows = barHost.querySelectorAll('g.bar-row');
-  assert.ok(rows.length > 0, 'the bar chart must be interactive');
-  const target = rows[0].getAttribute('data-operator');
-  rows[0].click();
+  const treemapHost = registry.get('treemap-host');
+  const tiles = treemapHost.querySelectorAll('g.tm-tile');
+  assert.ok(tiles.length > 0, 'the treemap must be interactive');
+  const target = tiles[0].getAttribute('data-operator');
+  tiles[0].click();
   await nextFrame();
 
   const chips = registry.get('gantt-filters');
@@ -800,9 +915,9 @@ test('clicking a bar filters the timeline and shows an active filter chip', asyn
   assert.match(chips.children[0].textContent, /算子/);
   assert.ok(chips.children[0].textContent.includes(target.slice(0, 10)), 'the chip names the operator');
 
-  // The other bars dim, and the pie stays un-filtered (category is not set).
-  const dimmed = barHost.querySelectorAll('g.bar-row').filter((row) => row.classList.contains('dimmed'));
-  assert.equal(dimmed.length, rows.length - 1);
+  // The other tiles dim (the selection is highlighted without a rebuild).
+  const dimmed = registry.get('treemap-host').querySelectorAll('g.tm-tile').filter((tile) => tile.classList.contains('dimmed'));
+  assert.equal(dimmed.length, tiles.length - 1);
 
   // Clearing via the chip removes the filter again.
   chips.children[0].children[0].click();
@@ -810,9 +925,9 @@ test('clicking a bar filters the timeline and shows an active filter chip', asyn
   assert.equal(registry.get('gantt-filters').children.length, 0);
 });
 
-test('clicking a donut legend entry focuses that category and links the views', async () => {
+test('clicking a strip legend entry focuses that category and links the views', async () => {
   await bootPage();
-  const legendButtons = registry.get('pie-legend').querySelectorAll('button');
+  const legendButtons = registry.get('share-bar-legend').querySelectorAll('button');
   assert.ok(legendButtons.length > 0);
   legendButtons[0].click();
   await nextFrame();
@@ -873,13 +988,34 @@ test('the stepper marks the section in view and scrolls on click', async () => {
   assert.ok(steps[2].listenerCount > 0);
 });
 
-test('an advice card links back to the timeline with a matching filter', async () => {
+test('an action in step ④ links back to the timeline with a matching filter', async () => {
   await bootPage();
-  const link = registry.get('advice-chain').querySelectorAll('button').find((button) => /在第 3 步查看/.test(button.textContent));
+  const chain = registry.get('advice-chain');
+  // The jump buttons live in step ④, so the flow must be driven first — the same
+  // path a reader takes.
+  const actionsNode = chain.querySelectorAll('button.flow-node').find((node) => node.dataset.node === 'actions');
+  actionsNode.click();
+  await nextFrame();
+  const link = chain.querySelectorAll('button').find((button) => button.textContent === '查看');
   assert.ok(link !== undefined, 'advice must offer a jump back into the timeline');
   link.click();
   await nextFrame();
   assert.ok(registry.get('gantt-filters').children.length >= 1, 'the jump applies a filter, not just a scroll');
+});
+
+test('an overview action opens step ④ on the very card it names', async () => {
+  await bootPage();
+  const conclusions = registry.get('conclusions');
+  const jump = conclusions.querySelectorAll('button').find((button) => button.textContent === '查看方案');
+  assert.ok(jump !== undefined, 'the overview must link into the action list');
+  jump.click();
+  await nextFrame();
+
+  const chain = registry.get('advice-chain');
+  const active = chain.querySelectorAll('button.flow-node').filter((node) => node.getAttribute('aria-selected') === 'true');
+  assert.equal(active.length, 1, 'exactly one step stays selected');
+  assert.equal(active[0].dataset.node, 'actions', 'the link selects the action step');
+  assert.ok(chain.querySelectorAll('.action-row').length > 0, 'and the action rows are on screen');
 });
 
 test('init survives an unreachable API without breaking the page', async () => {

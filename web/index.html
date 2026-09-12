@@ -176,7 +176,7 @@
   <!-- ══ 4 占比归因 ════════════════════════════════════════════════════ -->
   <section class="card" id="module-share" hidden>
     <div class="card-head">
-      <h2><span class="num">4</span>算子耗时占比</h2>
+      <h2><span class="num">4</span>占比归因</h2>
       <div class="card-tools">
         <div class="segmented" id="share-dimension" role="group" aria-label="统计维度">
           <button type="button" data-dimension="total" aria-pressed="true">累计总耗时</button>
@@ -189,32 +189,29 @@
             <option value="host">Host 侧</option>
           </select>
         </label>
-        <label class="select small">TopN
+        <label class="select small">方块数
           <select id="share-topn">
-            <option value="10">10</option>
+            <option value="12">12</option>
             <option value="20" selected>20</option>
             <option value="30">30</option>
           </select>
         </label>
       </div>
     </div>
-    <p class="hint" id="share-hint">点击饼图或条形图即可回到第 3 步筛选对应算子。</p>
 
-    <div class="charts">
-      <figure class="chart-card">
-        <figcaption>算子大类占比</figcaption>
-        <div class="pie-wrap">
-          <div class="pie-host" id="pie-host"></div>
-          <ul class="pie-legend" id="pie-legend"></ul>
-        </div>
-      </figure>
-      <figure class="chart-card">
-        <figcaption>TopN 耗时排行 <span class="hint" id="bar-note"></span></figcaption>
-        <div class="bar-wrap" id="bar-host"></div>
-      </figure>
-    </div>
+    <figure class="figure-strip">
+      <figcaption>大类构成 <span class="hint" id="share-bar-note"></span></figcaption>
+      <div id="share-bar-host"></div>
+      <div class="composition-legend" id="share-bar-legend"></div>
+    </figure>
+
+    <figure class="figure-diagram">
+      <figcaption>算子耗时分布 <span class="hint">面积 = 耗时占比 · 颜色 = 大类 · 点击方块可回到第 3 步筛选</span></figcaption>
+      <div id="treemap-host"></div>
+    </figure>
+
     <details class="table-details" id="ranking-details">
-      <summary>排行数据表</summary>
+      <summary>数据表</summary>
       <div class="table-scroll" id="ranking-host"></div>
     </details>
   </section>
@@ -222,7 +219,7 @@
   <!-- ══ 5 优化行动 ════════════════════════════════════════════════════ -->
   <section class="card" id="module-advice" hidden>
     <div class="card-head">
-      <h2><span class="num">5</span>结构化性能优化建议</h2>
+      <h2><span class="num">5</span>优化行动</h2>
       <div class="card-tools">
         <label class="select small">优先级
           <select id="advice-priority">
@@ -254,6 +251,7 @@
 
 <script src="util.js"></script>
 <script src="api.js"></script>
+<script src="diagram.js"></script>
 <script src="charts.js"></script>
 <script src="gantt.js"></script>
 <script src="docs-view.js"></script>
