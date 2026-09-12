@@ -339,7 +339,7 @@ node test/web-dom.test.mjs            # 前端三模块真实渲染 + 控制器 
 node test/client-bundle.test.mjs      # 浏览器插件包的加载、注册与降级
 ```
 
-当前状态：**86 个用例全部通过**（CI 在 Node 22 与 24 上跑同一套，见 [`.github/workflows/test.yml`](.github/workflows/test.yml)）。
+当前状态：**88 个用例全部通过**（CI 在 Node 22 与 24 上跑同一套，见 [`.github/workflows/test.yml`](.github/workflows/test.yml)）。
 
 值得说明的验证强度：
 
@@ -348,12 +348,29 @@ node test/client-bundle.test.mjs      # 浏览器插件包的加载、注册与�
 * 前端有一个自建的最小 DOM 环境，能真正跑 `init()` 与三个渲染器——这套测试在开发中抓到了"控制器缓存了不存在的元素 id 导致整页不渲染""中文类名导致建议卡片退化成未知元素"这类只有真实渲染才会暴露的问题；
 * 端到端验证做过真实 DSH 启动：独立 profile 装载插件后，页面/静态资源/健康检查全部 200，浏览器半被 client-modules 收进 `__DSH_BOOT__` 并从 `/plugins/??<id>/client.js` 成功加载，宿主注入的 `__VLLM_ASCEND_PROFILER__` 出现在 shell 索引中；`POST /api/jobs`（按路径）解析 35,713 事件 → 报告导出 Markdown 43KB + 打印版 52KB（含图表快照）。
 
+### 数据溯源审计（三块图到底是不是从上传的产物算出来的）
+
+[`tools/audit-provenance.mjs`](tools/audit-provenance.mjs) 用一个**已启动的实例 + 无头浏览器**回答这个问题，28 项检查分三层：
+
+```powershell
+# 1) 启动带插件的实例（§2），2) 启动带调试端口的无头浏览器（§3.9）
+node tools/audit-provenance.mjs --url http://127.0.0.1:3099/vllm-ascend-profiler/ `
+  --fixture test/fixtures/host-schedule-bound --port 9222
+```
+
+* **A 上传链**：走真实上传接口（`POST /api/jobs` 收集 → 分文件上传 → `/start`）解析真实产物，然后**用独立写的 CSV 解析器**重新求和 `op_statistic.csv` / `kernel_details.csv`，与页面数据逐算子比对（实测偏差 0.0000%）；同时校验文件血缘（每个文件的识别证据）、"大类 = 该大类算子之和"、占比合计 100%、证据指标与 KPI 同源、泳道行与事件全部来自产物；
+* **B 变异链**：改写产物里的一个耗时（例如把 `trace_view.json` 中 640 条 `MatMulV2` 事件翻倍）后重新上传，要求数字跟着变 —— 累计耗时 ×2.000、`computeUs` 增量与产物增量**完全相等**、候选证据按新数据重算；再单独改 CSV，验证"以 trace 为准 + 暴露 cross-check 偏差"；
+* **C 渲染链**：用 CDP 驱动真实页面切换数据集，读回**画出来的东西**：构成条占比、treemap 方块面积与标注 %、数据表前三行、流程节点数字、证据面板实测值、行动列表与收益合计、泳道图悬停卡片（名称/次数/均值），逐项与同一份视图模型 JSON 对齐；并确认改动产物后页面数字同步变化、无脚本异常。
+
+最近一次结果：**28/28 通过**（三个场景数据集在页面上给出三套不同的构成条 / 分布图 / 推理链）。
+
 ---
 
 ## 7. 已知边界
 
 * **阶段标签**：Ascend 产物默认不含 Prefill/Decode 标签（`step_trace_time.csv` 的 `Stage` 除外）。未分开采集时，阶段划分为推断结果，报告中标注置信度；建议按 §3.5 分开采集。
 * **大 trace**：解析阶段按事件预算等距采样，视图阶段再按行预算投影；两者都会在页面与报告里说明，累计耗时优先取 CANN 统计表以保证占比可信。
+* **CSV 多表不叠加**：同一份设备耗时常常同时出现在 `op_statistic.csv`（按算子）、`kernel_details.csv`（按 kernel）与 `operator_details.csv`（按算子实例）里。插件只取其中一张表作为 CSV 口径（优先统计表），其余表作为证据列出；两张表相差 >20% 时告警，而不是把差异平均掉或相加。
 * **绝对时间不混轴**：CSV 的 `Start Time` 是设备绝对时间，trace 的 `ts` 是相对时间，二者不做同轴绘制；聚合按统一单位合并并给出 cross-check 偏差。
 * **proto 解析**：Ascend proto 无自描述 schema，默认启发式识别（低置信度），可用 `protoFieldMap` 精确指定字段号。
 * **路由暴露**：分析页面与其 API 位于 webserver 的公开路径下（与前端静态资源同级）。DSH webserver 默认绑定 `127.0.0.1`，因此仅本机可访问；若把 `--host` 暴露到网络，请自行加访问控制。
