@@ -105,6 +105,9 @@ dsh --profile demo --from-default-profile web --port 3099 --no-open
 | 打包上传 | `*_ascend_pt` 目录整体 | 支持 `.zip` / `.tar.gz`（内存内解压，成员大小与数量有上限） |
 | **按路径分析** | GB 级 `trace_view.json` | 服务端**流式**读取，不占上传带宽；默认限制在会话工作区内 |
 
+没有现成产物也可以先试：`node test/make-fixture.mjs D:\tmp\samples` 生成三个互相可区分的场景（Host 调度 / 跨卡通信 / NPU 计算），
+结构与预期结论见 [`samples/README.md`](samples/README.md)。
+
 ### 3.3 解析进度
 
 解析是异步任务：页面轮询任务状态并显示「校验 → 解析 → 汇总 → 分析」四段进度与明细日志。大 trace **不会卡死页面**：事件按预算做等距采样（通信/拷贝/长耗时算子**全量保留**），采样情况在页面与报告中明确标注。

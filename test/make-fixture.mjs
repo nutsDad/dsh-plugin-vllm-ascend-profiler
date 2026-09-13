@@ -46,9 +46,10 @@ function makeRandom(seed) {
  * Build one scenario.
  *
  * @param {'decode-comm-bound'|'prefill-compute-bound'|'host-schedule-bound'} scenario - scenario id.
+ * @param {{steps?: number, rank?: number}} [options] - overrides for short samples.
  * @returns {{files: Record<string, string>, summary: object}} generated files.
  */
-export function buildScenario(scenario) {
+export function buildScenario(scenario, options = {}) {
   const random = makeRandom(scenario.length * 7919 + 13);
   const trace = [];
   const hostStartUs = 1704161511420000;
@@ -66,7 +67,8 @@ export function buildScenario(scenario) {
 
   const layers = 32;
   const config = SCENARIOS[scenario];
-  const steps = config.steps;
+  const steps = options.steps ?? config.steps;
+  const rank = options.rank ?? config.rank;
 
   for (let step = 0; step < steps; step += 1) {
     const stepStart = cursor;
@@ -192,10 +194,10 @@ export function buildScenario(scenario) {
       ['Device_id', 'Step', 'Computing', 'Communication(Not Overlapped)', 'Overlapped', 'Communication', 'Free', 'Stage', 'Bubble', 'Preparing'],
       stepRows,
     ),
-    [`profiler_info_${config.rank}.json`]: JSON.stringify({
-      'Device ID': config.rank,
+    [`profiler_info_${rank}.json`]: JSON.stringify({
+      'Device ID': rank,
       'Device Type': 'Ascend910B4',
-      'Rank ID': config.rank,
+      'Rank ID': rank,
       'World Size': 8,
       'Parallel': 'tp8',
       'Profiler Level': 'Level1',
