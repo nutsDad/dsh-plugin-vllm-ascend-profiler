@@ -91,8 +91,11 @@ test('client bundle registers under the package id with the expected face', () =
   const { registration, factoryExports } = loadBundle();
   assert.equal(registration.id, 'dsh-plugin-vllm-ascend-profiler');
   assert.equal(typeof factoryExports.apply, 'function');
-  assert.ok(Array.isArray(factoryExports.inject));
-  assert.equal(factoryExports.inject.length, 0);
+  // The cordis client runner resolves injected services *before* apply() runs, so
+  // `slots` has to be declared here. Declaring nothing leaves ctx.slots undefined
+  // and the sidebar entry silently never registers (the bug fixed in v1.2.3).
+  assert.equal(factoryExports.inject.length, 1);
+  assert.equal(factoryExports.inject[0], 'slots');
 });
 
 test('client bundle registers a sidebar footer entry', () => {
