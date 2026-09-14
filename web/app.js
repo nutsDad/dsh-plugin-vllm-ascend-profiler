@@ -355,7 +355,7 @@
         onclick: () => void loadDataset(entry.id),
       }, [
         h('span.dot'),
-        h('span', {}, truncate(entry.label ?? entry.id, 28)),
+        h('span', {}, truncateMiddle(entry.label ?? entry.id, 28)),
         h('span.hint', {}, entry.bottleneck ?? ''),
       ])));
       if (state.datasets.length > 0 && state.viewModel === undefined) await loadDataset(state.datasets[0].id);
@@ -1111,6 +1111,21 @@
   function truncate(text, limit) {
     const value = String(text ?? '');
     return value.length <= limit ? value : `${value.slice(0, limit - 1)}…`;
+  }
+
+  /**
+   * Truncate from the middle.
+   *
+   * Dataset labels carry their distinguishing part at the end
+   * (`host-schedule-bound` vs `host-schedule-bound-optimized`): cutting the tail
+   * makes two different captures look identical in the dataset list.
+   */
+  function truncateMiddle(text, limit) {
+    const value = String(text ?? '');
+    if (value.length <= limit) return value;
+    const head = Math.ceil((limit - 1) / 2);
+    const tail = Math.floor((limit - 1) / 2);
+    return `${value.slice(0, head)}…${value.slice(value.length - tail)}`;
   }
 
   function phaseLabel(phase) {
