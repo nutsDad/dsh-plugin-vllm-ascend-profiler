@@ -1,17 +1,30 @@
 # 示例 profiling 产物
 
 这里的示例模拟 torch_npu 导出的 `*_ascend_pt` 目录，用来快速试用 **vLLM-Ascend Profiler Analyzer**：
-把某个场景的目录（或它的 zip）导进页面，就能走完「导入 → 概览 → 时序取证 → 占比归因 → 优化行动」五步。
+把某个场景的 zip 导进页面，就能走完「导入 → 概览 → 时序取证 → 占比归因 → 优化行动」五步，再按下面第 6 步的说明做一次前后对比。
 
 示例是**生成物**（确定性随机种子，可重复生成），不是真实硬件采集结果 —— 真实产物的字段说明见
 [`docs/metrics-and-fields.md`](../docs/metrics-and-fields.md) 与页面顶部的「说明文档」。
 仓库里唯一一份真实数据是 [`test/fixtures/ascend-trace_view.sample.json`](../test/fixtures/ascend-trace_view.sample.json)
 （Ascend/mstt，Apache-2.0 的 trace 截断前缀，只含 Host 侧事件）。
 
+## 直接可用的 zip（已随仓库提供）
+
+| zip | 大小 | 用途 |
+| --- | --- | --- |
+| [`quickstart.zip`](quickstart.zip) | 46 KB | 2 步的最小产物：先确认"能导入、能出图" |
+| [`host-schedule-bound.zip`](host-schedule-bound.zip) | 429 KB | 优化前（Host 调度受限，20 步） |
+| [`host-schedule-bound-optimized.zip`](host-schedule-bound-optimized.zip) | 231 KB | **优化后**（与上一个配对：每步墙钟 −45%、NPU 忙碌率 33% → 60%） |
+| [`decode-comm-bound.zip`](decode-comm-bound.zip) | 180 KB | 跨卡通信受限（TP=8 decode，24 步） |
+| [`prefill-compute-bound.zip`](prefill-compute-bound.zip) | 96 KB | NPU 计算受限（chunked prefill，6 步） |
+
+每个 zip 解包后就是一个完整的产物目录（`trace_view.json` + 4 张 CSV + `profiler_info_0.json` + `communication.json`），
+页面里可以直接拖入 zip，也可以解包后多选文件，或放进 DSH 工作区用"按路径分析"。
+
 ## 生成
 
 ```powershell
-node test/make-fixture.mjs D:\tmp\vllm-ascend-samples   # 三个场景（24 / 6 / 20 步）
+node test/make-fixture.mjs D:\tmp\vllm-ascend-samples   # 四个场景（24 / 6 / 20 / 20 步）
 ```
 
 命令行只接受输出目录；要生成**短样例**（例如 2 步、约 0.6 MB 的冒烟样例）用生成器 API 覆盖步数与 rank：
