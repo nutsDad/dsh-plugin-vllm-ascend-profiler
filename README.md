@@ -105,8 +105,9 @@ dsh --profile demo --from-default-profile web --port 3099 --no-open
 | 打包上传 | `*_ascend_pt` 目录整体 | 支持 `.zip` / `.tar.gz`（内存内解压，成员大小与数量有上限） |
 | **按路径分析** | GB 级 `trace_view.json` | 服务端**流式**读取，不占上传带宽；默认限制在会话工作区内 |
 
-没有现成产物也可以先试：`node test/make-fixture.mjs D:\tmp\samples` 生成三个互相可区分的场景（Host 调度 / 跨卡通信 / NPU 计算），
-结构与预期结论见 [`samples/README.md`](samples/README.md)。
+没有现成产物也可以先试：[`samples/`](samples/README.md) 里已经放了 5 个可直接上传的 zip（共 0.96 MB）——`quickstart.zip`（2 步冒烟）、
+`host-schedule-bound.zip` 与 `host-schedule-bound-optimized.zip`（**优化前 / 优化后一对**，用来试第 6 步）、以及跨卡通信与 NPU 计算两个场景；
+也可以 `node test/make-fixture.mjs D:\tmp\samples` 自己生成（四个场景，含配对）。
 
 ### 3.3 解析进度
 
