@@ -1,0 +1,13 @@
+{
+  "Device ID": 0,
+  "Device Type": "Ascend910B4",
+  "Rank ID": 0,
+  "World Size": 8,
+  "Parallel": "tp8",
+  "Profiler Level": "Level1",
+  "AI Core Metrics": "PipeUtilization",
+  "vllm version": "0.9.1",
+  "vllm-ascend version": "0.9.1rc1",
+  "torch_npu version": "2.5.1",
+  "CANN version": "8.1.RC1"
+}

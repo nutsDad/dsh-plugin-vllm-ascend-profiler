@@ -1,0 +1,392 @@
+{
+  "AllReduce": {
+    "count": 64,
+    "totalTimeUs": 2177.130757915973,
+    "op": [
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 33.43818165995181,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 35.25998729690909,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 31.81226133219898,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 30.972985047101975,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 34.081744031980634,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 34.74317056909203,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 36.89483914040029,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 35.720865060389045,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 35.89245623387396,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 33.716668038815264,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 34.27461133413017,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 33.53036359250546,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 33.09183315820992,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 34.604826629906896,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 37.26156936846674,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 36.40492912977933,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 36.50959282256663,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 32.32144639119506,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 36.03640782348812,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 32.89996328353882,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 34.90865636952222,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 36.79478049650788,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 33.77552440427244,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 31.04782079011202,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 31.1101480666548,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 34.29253524467349,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 35.17601994089782,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 33.282809510827065,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 37.31839530654251,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 37.14687005952001,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 34.98069838844239,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 31.76619043201208,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 34.06600299663842,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 30.705299759656192,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 32.65995528660715,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 36.08382366150617,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 31.932109371200205,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 34.91324718818069,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 32.68023517839611,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 36.84267083406448,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 31.48074033148587,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 31.342410913854838,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 35.20507639907301,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 35.582905812561506,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 36.861145145073536,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 35.63862223550677,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 34.359704778715965,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 31.816961458325387,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 31.005776204541327,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 31.712165576964615,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 31.315049272403122,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 31.78422375768423,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 32.15528902746737,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 35.06277848705649,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 36.412741960212585,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 36.976031821966174,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 34.7835422564298,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 33.70465163961053,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 37.29011804722249,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 32.66067788749933,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 32.122597659006715,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 31.09142883345485,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 35.00521586351097,
+        "sizeBytes": 98304
+      },
+      {
+        "name": "AllReduce",
+        "group": "tp-8",
+        "durationUs": 30.808407315611838,
+        "sizeBytes": 98304
+      }
+    ]
+  }
+}

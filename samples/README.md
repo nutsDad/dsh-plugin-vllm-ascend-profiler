@@ -17,9 +17,27 @@
 | [`host-schedule-bound-optimized.zip`](host-schedule-bound-optimized.zip) | 231 KB | **优化后**（与上一个配对：每步墙钟 −45%、NPU 忙碌率 33% → 60%） |
 | [`decode-comm-bound.zip`](decode-comm-bound.zip) | 180 KB | 跨卡通信受限（TP=8 decode，24 步） |
 | [`prefill-compute-bound.zip`](prefill-compute-bound.zip) | 96 KB | NPU 计算受限（chunked prefill，6 步） |
+| [`real-trace-prefix-host-only.zip`](real-trace-prefix-host-only.zip) | 7 KB | **真实** Ascend trace 的截断前缀（Ascend/mstt，Apache-2.0）：只有 Host 侧事件 + 截断告警，用来看解析容错 |
 
 每个 zip 解包后就是一个完整的产物目录（`trace_view.json` + 4 张 CSV + `profiler_info_0.json` + `communication.json`），
 页面里可以直接拖入 zip，也可以解包后多选文件，或放进 DSH 工作区用"按路径分析"。
+
+## 解包后的目录（同样随仓库提供，便于直接查看字段）
+
+`quickstart/`、`host-schedule-bound/`、`host-schedule-bound-optimized/`、`decode-comm-bound/`、`prefill-compute-bound/`
+就是上表前五个 zip 的内容，方便在 GitHub 上直接读某个表头或某行数据；文件清单与字段说明见
+[`docs/metrics-and-fields.md`](../docs/metrics-and-fields.md)。
+
+不想逐个下载时，用生成器一次性产出全部场景（并可用 `--steps` 覆盖步数）比在仓库里存一份"合集 zip"更省事：
+
+```powershell
+node test/make-fixture.mjs D:\tmp\samples
+```
+
+## 使用动图
+
+[`demo/vllm-ascend-profiler-demo-720.gif`](demo/vllm-ascend-profiler-demo-720.gif)（720×450 · 约 4 MB）是完整使用流程的录屏：
+导入产物 → 概览 → 泳道图（悬停/筛选）→ 占比归因（点击方块联动）→ ①→⑤ 推理链 → 切换数据集 → 导出 → **第 6 步导入优化后产物并读出前后对比**。
 
 ## 生成
 
@@ -50,9 +68,9 @@ for (const [name, content] of Object.entries(files)) writeFileSync(`D:/tmp/quick
 | `profiler_info_0.json` | rank 元信息（设备型号、并行策略、CANN / torch_npu / vllm-ascend 版本） |
 | `communication.json` | HCCL 通信算子汇总（名称、通信组、单次耗时、消息大小） |
 
-## 四个场景与预期结论
+## 场景与预期结论
 
-四个场景故意做成**互相可区分**，用来验证"结论确实随产物变化"；其中前两个是一对**优化前 / 优化后**：
+这些场景故意做成**互相可区分**，用来验证"结论确实随产物变化"；其中前两行是一对**优化前 / 优化后**：
 
 | 场景 | 步数 | 生成规模 | 预期瓶颈 | 形态 |
 | --- | --- | --- | --- | --- |
