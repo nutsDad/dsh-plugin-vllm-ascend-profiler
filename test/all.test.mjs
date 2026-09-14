@@ -11,6 +11,7 @@ import './parse-primitives.test.mjs';
 import './protobuf.test.mjs';
 import './pipeline.test.mjs';
 import './analysis.test.mjs';
+import './compare.test.mjs';
 import './http.test.mjs';
 import './web-dom.test.mjs';
 import './client-bundle.test.mjs';

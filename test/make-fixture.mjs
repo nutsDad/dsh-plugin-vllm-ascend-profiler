@@ -309,6 +309,38 @@ const SCENARIOS = {
     macRatio: 0.18,
     mte2Ratio: 0.44,
   },
+  /**
+   * The same workload after the graph-mode / dispatch fixes of the host-bound
+   * scenario: fewer host ops per step, a cheaper sampler and a shorter dispatch
+   * window, so the device starts earlier and the step gets shorter. Pairs with
+   * `host-schedule-bound` as a before/after comparison sample.
+   */
+  'host-schedule-bound-optimized': {
+    description: '同一负载的优化后采集：启用图模式并把逐步下发合并成一次回放，Host 逐步派发量下降、设备更早启动、步长变短。',
+    steps: 20,
+    prefillSteps: 2,
+    rank: 0,
+    matmulUs: 120,
+    attentionUs: 70,
+    vectorUs: 24,
+    vectorOpsPerLayer: 2,
+    commUsPerLayer: 34,
+    commOverlapped: true,
+    commSizeBytes: 96 * 1024,
+    copyPerStep: 260,
+    freeUs: 900,
+    engineUs: 900,
+    prepareUs: 520,
+    metadataUs: 300,
+    samplerUs: 800,
+    hostOpsPerStep: 620,
+    hostOpWindowUs: 5200,
+    hostOpJitterUs: 30,
+    hostStepUs: 12000,
+    deviceOffsetUs: 1400,
+    macRatio: 0.18,
+    mte2Ratio: 0.44,
+  },
 };
 
 function meta(name, pid, args, tid) {

@@ -17,11 +17,13 @@
  *
  * Shots written: `01-intake`, `02-overview`, `03-swimlane`, `04-share`,
  * `05-locate`, `06-evidence`, `07-actions`, `08-benefit`, `09-full`,
- * `10-linked-filter`, `11-dark-share`.
+ * `10-linked-filter`, `11-dark-share`, and — when an optimized bundle is
+ * available — `12-compare-summary`, `13-compare-gantt`, `14-compare-share`,
+ * `15-compare-full`.
  */
 
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 
 /** Parse `--key value` / `--flag` arguments. */
 function parseArgs(argv) {
@@ -121,6 +123,7 @@ async function waitForRender(client, attempts = 160) {
     gantt: document.getElementById('module-gantt') ? !document.getElementById('module-gantt').hidden : false,
     share: document.getElementById('module-share') ? !document.getElementById('module-share').hidden : false,
     advice: document.getElementById('module-advice') ? !document.getElementById('module-advice').hidden : false,
+    compare: document.getElementById('module-compare') ? !document.getElementById('module-compare').hidden : false,
     kpis: document.querySelectorAll('.kpi').length,
     flowNodes: document.querySelectorAll('button.flow-node').length,
     treemapTiles: document.querySelectorAll('g.tm-tile').length,
@@ -133,7 +136,7 @@ async function waitForRender(client, attempts = 160) {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     const raw = await evaluate(client, probe);
     last = raw === undefined ? {} : JSON.parse(raw);
-    if (last.gantt === true && last.share === true && last.advice === true && last.flowNodes >= 5
+    if (last.gantt === true && last.share === true && last.advice === true && last.compare === true && last.flowNodes >= 5
       && last.treemapTiles > 0 && last.shareSegments > 0 && last.ganttWidth > 0) return last;
     if (last.error !== null && last.error !== undefined) throw new Error(`page reported an error: ${last.error}`);
     await sleep(250);
@@ -141,9 +144,29 @@ async function waitForRender(client, attempts = 160) {
   throw new Error(`page did not render in time: ${JSON.stringify(last)}`);
 }
 
+/**
+ * Select the dataset the shots should be taken from.
+ *
+ * An instance may hold several datasets (including the optimized captures of a
+ * previous run), so relying on "the page loaded the first one" silently captures
+ * whatever happened to be first. The label is matched by prefix.
+ */
+async function selectDataset(client, label) {
+  return await evaluate(client, `(async () => {
+    const button = [...document.querySelectorAll('#dataset-list button')]
+      .find((node) => (node.textContent ?? '').startsWith(${JSON.stringify(label)}));
+    if (button === undefined) return 'missing';
+    button.click();
+    for (let attempt = 0; attempt < 120; attempt += 1) {
+      if (button.classList.contains('active') && document.querySelector('g.tm-tile') !== null) return 'ok';
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+    return 'timeout';
+  })()`);
+}
+
 /** Select one step of the reasoning chain and let its panel paint. */
-async function selectChainStep(client, step) {
-  return await evaluate(client, `(() => {
+async function selectChainStep(client, step) {  return await evaluate(client, `(() => {
     const node = document.querySelector('#advice-chain button.flow-node[data-node="${step}"]');
     if (node === null) return 'missing';
     node.click();
@@ -214,6 +237,8 @@ try {
     throw error;
   }
   process.stdout.write(`rendered: ${JSON.stringify(state)}\n`);
+  const baseline = String(args.baseline ?? 'host-schedule-bound');
+  process.stdout.write(`baseline dataset: ${baseline} → ${String(await selectDataset(client, baseline))}\n`);
   // Let the entry animations finish (KPI count-up, bar grow-in, reveal sweep) so
   // the stills show final values instead of a frame mid-animation.
   await sleep(Number(args.settle ?? 1400));
@@ -274,6 +299,43 @@ try {
     await client.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }] });
   } catch {
     // Media emulation is optional.
+  }
+
+  // Step 6: import the *optimized* capture through the page's own file input, then
+  // capture the comparison — step 6's verdicts plus the two before/after panes.
+  // The paths must be absolute: DevTools hands the renderer a path it can only
+  // read verbatim, and a relative one yields zero-length files plus an
+  // `ERR_ACCESS_DENIED` upload.
+  const compareDir = resolve(String(args['compare-dir'] ?? join('test', 'fixtures', 'host-schedule-bound-optimized')));
+  if (existsSync(compareDir)) {
+    const files = readdirSync(compareDir).map((name) => join(compareDir, name));
+    process.stdout.write(`step 6 导入优化后产物：${String(files.length)} 个文件（${compareDir}）\n`);
+    await evaluate(client, `document.getElementById('module-compare')?.scrollIntoView({ behavior: 'smooth', block: 'start' })`);
+    await sleep(700);
+    const doc = await client.send('DOM.getDocument', { depth: -1 });
+    const input = await client.send('DOM.querySelector', { nodeId: doc.root.nodeId, selector: '#compare-file-input' });
+    await client.send('DOM.setFileInputFiles', { nodeId: input.nodeId, files });
+    for (let attempt = 0; attempt < 120; attempt += 1) {
+      const ready = await evaluate(client, `document.getElementById('gantt-after-pane') ? !document.getElementById('gantt-after-pane').hidden : false`);
+      if (ready === true) break;
+      await sleep(300);
+    }
+    await sleep(1200);
+    const verdict = await evaluate(client, `JSON.stringify({
+      pair: document.getElementById('compare-pair')?.textContent ?? '',
+      achieved: document.querySelectorAll('#compare-summary .verify-verdict.achieved').length,
+      missed: document.querySelectorAll('#compare-summary .verify-verdict.missed').length,
+      chips: document.querySelectorAll('#gantt-deltas .delta-chip').length,
+      deltaTables: document.querySelectorAll('#share-deltas .delta-table').length,
+      afterCanvas: document.getElementById('gantt-canvas-after')?.width ?? 0,
+    })`);
+    process.stdout.write(`compare state: ${String(verdict)}\n`);
+    written.push(await captureElement(client, '#module-compare', join(outDir, '12-compare-summary.png')));
+    written.push(await captureElement(client, '#module-gantt', join(outDir, '13-compare-gantt.png')));
+    written.push(await captureElement(client, '#module-share', join(outDir, '14-compare-share.png')));
+    written.push(await captureFull(client, join(outDir, '15-compare-full.png')));
+  } else {
+    process.stdout.write(`no optimized bundle at ${compareDir}: skipping the comparison shots\n`);
   }
 
   for (const file of written) process.stdout.write(`wrote ${file}\n`);

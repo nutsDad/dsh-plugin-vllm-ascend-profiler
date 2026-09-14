@@ -26,7 +26,10 @@
     root.append(h('h3', {}, '二、阶段口径（Prefill / Decode）'));
     root.append(h('ul', {}, bundle.usage.phaseAdvice.map((item) => h('li', {}, item))));
 
-    root.append(h('h3', {}, '三、指标含义与计算口径'));
+    root.append(h('h3', {}, '三、优化前后对比（第 6 步）'));
+    root.append(h('ul', {}, (bundle.usage.compareAdvice ?? []).map((item) => h('li', {}, item))));
+
+    root.append(h('h3', {}, '四、指标含义与计算口径'));
     for (const group of bundle.metricDocs) {
       root.append(h('h4', {}, group.group));
       for (const metric of group.metrics) {
@@ -41,7 +44,7 @@
       }
     }
 
-    root.append(h('h3', {}, '四、vLLM-Ascend / 昇腾 profiling 产物与字段'));
+    root.append(h('h3', {}, '五、vLLM-Ascend / 昇腾 profiling 产物与字段'));
     for (const artifact of bundle.artifactDocs) {
       root.append(h('div.doc-item', {}, [
         h('div.name', {}, artifact.name),
@@ -53,7 +56,7 @@
       ]));
     }
 
-    root.append(h('h3', {}, '五、性能提示'));
+    root.append(h('h3', {}, '六、性能提示'));
     root.append(h('ul', {}, bundle.usage.performanceTips.map((item) => h('li', {}, item))));
     return root;
   }

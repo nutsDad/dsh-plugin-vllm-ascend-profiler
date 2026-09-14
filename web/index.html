@@ -31,6 +31,7 @@
   <button type="button" class="step" data-step="module-gantt"><i>3</i><span>时序取证</span></button>
   <button type="button" class="step" data-step="module-share"><i>4</i><span>占比归因</span></button>
   <button type="button" class="step" data-step="module-advice"><i>5</i><span>优化行动</span></button>
+  <button type="button" class="step" data-step="module-compare"><i>6</i><span>优化后对比</span></button>
   <span class="step-progress" id="step-progress" aria-hidden="true"></span>
 </nav>
 
@@ -163,14 +164,39 @@
       <div class="active-filters" id="gantt-filters"></div>
     </div>
 
-    <div class="gantt-shell">
-      <canvas id="gantt-canvas" height="520"></canvas>
-      <div class="gantt-tooltip" id="gantt-tooltip" hidden></div>
+    <div class="compare-summary" id="gantt-compare-summary" hidden></div>
+
+    <div class="compare-grid" id="gantt-compare-grid">
+      <div class="compare-pane" id="gantt-before-pane">
+        <div class="pane-head" id="gantt-before-head" hidden>
+          <span class="pane-tag before">优化前</span>
+          <span class="pane-note" id="gantt-before-note"></span>
+        </div>
+        <div class="gantt-shell">
+          <canvas id="gantt-canvas" height="520"></canvas>
+          <div class="gantt-tooltip" id="gantt-tooltip" hidden></div>
+        </div>
+        <div class="gantt-foot">
+          <span id="gantt-cursor" class="mono"></span>
+          <span id="gantt-hint" class="hint"></span>
+        </div>
+      </div>
+      <div class="compare-pane" id="gantt-after-pane" hidden>
+        <div class="pane-head">
+          <span class="pane-tag after">优化后</span>
+          <span class="pane-note" id="gantt-after-note"></span>
+        </div>
+        <div class="gantt-shell">
+          <canvas id="gantt-canvas-after" height="520"></canvas>
+          <div class="gantt-tooltip" id="gantt-tooltip-after" hidden></div>
+        </div>
+        <div class="gantt-foot">
+          <span id="gantt-cursor-after" class="mono"></span>
+          <span id="gantt-hint-after" class="hint"></span>
+        </div>
+      </div>
     </div>
-    <div class="gantt-foot">
-      <span id="gantt-cursor" class="mono"></span>
-      <span id="gantt-hint" class="hint"></span>
-    </div>
+    <div class="delta-strip" id="gantt-deltas" hidden></div>
   </section>
 
   <!-- ══ 4 占比归因 ════════════════════════════════════════════════════ -->
@@ -199,20 +225,49 @@
       </div>
     </div>
 
-    <figure class="figure-strip">
-      <figcaption>大类构成 <span class="hint" id="share-bar-note"></span></figcaption>
-      <div id="share-bar-host"></div>
-      <div class="composition-legend" id="share-bar-legend"></div>
-    </figure>
+    <div class="compare-summary" id="share-compare-summary" hidden></div>
 
-    <figure class="figure-diagram">
-      <figcaption>算子耗时分布 <span class="hint">面积 = 耗时占比 · 颜色 = 大类 · 点击方块可回到第 3 步筛选</span></figcaption>
-      <div id="treemap-host"></div>
-    </figure>
+    <div class="compare-grid" id="share-compare-grid">
+      <div class="compare-pane" id="share-before-pane">
+        <div class="pane-head" id="share-before-head" hidden>
+          <span class="pane-tag before">优化前</span>
+          <span class="pane-note" id="share-before-note"></span>
+        </div>
+        <figure class="figure-strip">
+          <figcaption>大类构成 <span class="hint" id="share-bar-note"></span></figcaption>
+          <div id="share-bar-host"></div>
+          <div class="composition-legend" id="share-bar-legend"></div>
+        </figure>
+
+        <figure class="figure-diagram">
+          <figcaption>算子耗时分布 <span class="hint">面积 = 耗时占比 · 颜色 = 大类 · 点击方块可回到第 3 步筛选</span></figcaption>
+          <div id="treemap-host"></div>
+        </figure>
+      </div>
+      <div class="compare-pane" id="share-after-pane" hidden>
+        <div class="pane-head">
+          <span class="pane-tag after">优化后</span>
+          <span class="pane-note" id="share-after-note"></span>
+        </div>
+        <figure class="figure-strip">
+          <figcaption>大类构成 <span class="hint" id="share-bar-note-after"></span></figcaption>
+          <div id="share-bar-host-after"></div>
+          <div class="composition-legend" id="share-bar-legend-after"></div>
+        </figure>
+
+        <figure class="figure-diagram">
+          <figcaption>算子耗时分布 <span class="hint">同一口径下的优化后结果</span></figcaption>
+          <div id="treemap-host-after"></div>
+        </figure>
+      </div>
+    </div>
+
+    <div class="delta-table" id="share-deltas" hidden></div>
 
     <details class="table-details" id="ranking-details">
       <summary>数据表</summary>
       <div class="table-scroll" id="ranking-host"></div>
+      <div class="table-scroll" id="ranking-host-after" hidden></div>
     </details>
   </section>
 
@@ -231,6 +286,46 @@
       </div>
     </div>
     <div id="advice-chain"></div>
+  </section>
+
+  <!-- ══ 6 优化后导入与前后对比 ═════════════════════════════════════════ -->
+  <section class="card" id="module-compare" hidden>
+    <div class="card-head">
+      <h2><span class="num">6</span>优化后导入 · 前后对比</h2>
+      <div class="card-tools">
+        <span class="hint" id="compare-pair"></span>
+        <button type="button" class="ghost small" id="compare-clear" hidden>清除对比</button>
+      </div>
+    </div>
+
+    <div class="compare-intake" id="compare-intake">
+      <div class="drop compact" id="compare-dropzone" tabindex="0" role="button" aria-label="选择或拖入优化后的 profiling 文件">
+        <input type="file" id="compare-file-input" multiple hidden>
+        <div class="drop-icon" aria-hidden="true">⇪</div>
+        <p class="drop-title">点击选择，或把<strong>优化后</strong>的产物拖到这里</p>
+        <p class="drop-hint">与第 1 步相同的导入方式：多选文件 / zip / tar.gz；导入后第 3、4 步会出现前后对比</p>
+      </div>
+      <div class="pathbox">
+        <label class="field-label" for="compare-path-input">或按路径导入优化后产物</label>
+        <div class="row">
+          <input type="text" id="compare-path-input" placeholder="D:\profiles\after\_ascend_pt" spellcheck="false">
+          <button type="button" id="compare-path-button" class="primary">解析</button>
+        </div>
+        <p class="hint">与「优化前」数据集使用同一套解析与门限，两侧口径自动对齐。</p>
+      </div>
+    </div>
+
+    <div class="progress-wrap compact" id="compare-progress-wrap" hidden>
+      <div class="progress-head">
+        <span id="compare-progress-detail">准备中…</span>
+        <span id="compare-progress-percent" class="mono">0%</span>
+      </div>
+      <div class="progress"><div class="progress-bar" id="compare-progress-bar"></div></div>
+    </div>
+
+    <div class="alert error" id="compare-error" hidden></div>
+
+    <div id="compare-summary" hidden></div>
   </section>
 </main>
 
@@ -256,6 +351,7 @@
 <script src="gantt.js"></script>
 <script src="docs-view.js"></script>
 <script src="advice-view.js"></script>
+<script src="compare-view.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

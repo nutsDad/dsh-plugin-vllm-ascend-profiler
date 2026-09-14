@@ -96,6 +96,20 @@
       this.#emitSelection();
     }
 
+    /** Drop the dataset and blank the canvas (used when a comparison is removed). */
+    clear() {
+      this.data = undefined;
+      this.rows = [];
+      this.hover = undefined;
+      this.playhead = undefined;
+      this.filterName = undefined;
+      if (this.tooltip !== undefined) this.tooltip.hidden = true;
+      if (this.hintLabel !== undefined) this.hintLabel.textContent = '';
+      if (this.cursorLabel !== undefined) this.cursorLabel.textContent = '';
+      const context = this.canvas.getContext('2d');
+      if (context !== null && context !== undefined) context.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    }
+
     /** Apply row ordering / limit controls. */
     setOptions({ sortMode, rowLimit }) {
       if (sortMode !== undefined) this.sortMode = sortMode;

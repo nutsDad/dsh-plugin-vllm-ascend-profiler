@@ -11,6 +11,7 @@ node_modules/
 test/fixtures/decode-comm-bound/
 test/fixtures/prefill-compute-bound/
 test/fixtures/host-schedule-bound/
+test/fixtures/host-schedule-bound-optimized/
 
 # Local DSH profiles / demo instances used while developing the plugin
 .dsh-demo/

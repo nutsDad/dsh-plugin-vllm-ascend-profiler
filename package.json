@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-vllm-ascend-profiler",
-  "version": "1.2.3",
+  "version": "1.3.0",
   "private": true,
   "description": "vLLM-Ascend Profiler Analyzer — a DeepSeek Harness plugin that ingests vLLM-Ascend / Ascend NPU profiling artifacts, renders a standalone Host+Device swimlane / cost-share / optimization-advice surface, and exports Markdown or PDF reports.",
   "keywords": [

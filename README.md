@@ -112,9 +112,9 @@ dsh --profile demo --from-default-profile web --port 3099 --no-open
 
 解析是异步任务：页面轮询任务状态并显示「校验 → 解析 → 汇总 → 分析」四段进度与明细日志。大 trace **不会卡死页面**：事件按预算做等距采样（通信/拷贝/长耗时算子**全量保留**），采样情况在页面与报告中明确标注。
 
-### 3.4 三大模块
+### 3.4 六大模块
 
-页面是一个**五步流程**（导入产物 → 概览与定位 → 时序取证 → 占比归因 → 优化行动），顶部步骤条显示当前进度并可点击跳转。三个可视化模块共享**同一个筛选状态**：在泳道图里点选算子、在大类构成条里点选大类、在耗时分布图里点选方块，效果会同步到其它视图（对应条目高亮、其余淡出），筛选条件以可关闭的标签显示，`Esc` 一键清除。概览页的「查看方案」会把对应优化项直接带到第 5 步的第 ④ 环。
+页面是一个**六步流程**（导入产物 → 概览与定位 → 时序取证 → 占比归因 → 优化行动 → 优化后对比），顶部步骤条显示当前进度并可点击跳转。三个可视化模块共享**同一个筛选状态**：在泳道图里点选算子、在大类构成条里点选大类、在耗时分布图里点选方块，效果会同步到其它视图（对应条目高亮、其余淡出），筛选条件以可关闭的标签显示，`Esc` 一键清除。概览页的「查看方案」会把对应优化项直接带到第 5 步的第 ④ 环。
 
 **模块一 · Host / Device 算子执行泳道图**
 
@@ -141,6 +141,23 @@ dsh --profile demo --from-default-profile web --port 3099 --no-open
 3. **根因推断**：每条机理压缩成「触发数据 → 作用机理 → 影响」三段式链条，机理原文与现场确认方法在「依据」里；
 4. **优化行动**：按 高/中/低 排序，每条一眼看到收益区间条（竖线=估算值，浅色=经验区间）与置信度，动作、验证方法、风险、关联根因在「依据 / 动作 / 验证」折叠项内；
 5. **预期收益**：逐项收益条 + 保守/乐观合计，明确标注哪些是本数据集推算、哪些是经验区间，并说明多项优化的收益不可简单相加。
+
+**第 6 步 · 优化后导入与前后对比**
+
+把优化后的那次采集导进来（拖拽 / zip / 按路径，与第 1 步同一套导入方式），页面会自动把当前数据集当作 **优化前**、新导入的当作 **优化后** 配对，并回答"改动到底有没有用"：
+
+* **结论句 + 四张对比卡**：每步墙钟、NPU 忙碌率、Host 独占/步、派发算子数/步，每张显示 `前 → 后` 与改善幅度（↑好/↓坏按指标方向判定，占比类指标不会被误判成"变差"）；
+* **可比性检查**：步数差异 >15%、Prefill/Decode 构成变化 >10pt、阶段口径不同、任一侧 trace 被采样、产物文件不同、瓶颈类型变化，都会逐条说明——两份不可比的采集不会被包装成"性能提升"；
+* **第 5 步建议的达成校验**：每条优化项都声明了它要改善的指标，对比后给出 `已达成 / 部分达成 / 未达成 / 无法判定`，并列出目标指标的前后数值与判定阈值（阈值 = 预期收益的一半，下限 1%）；
+* **瓶颈变化**：类型是否改变、得分升降。
+
+配对完成后，**第 3 步与第 4 步变成左右对照**（左 = 优化前，右 = 优化后）：
+
+* 第 3 步：两张泳道图并排，同一套排序/行数设置，各自可悬停看算子卡片；上方一排 delta 徽标（每步墙钟、NPU 忙碌率、Host 独占/步、派发算子数/步、同步类算子/步、通信未掩盖）；
+* 第 4 步：两条大类构成条 + 两张耗时分布图并排；下方两张变化表——**大类耗时**（前 → 后、绝对与相对变化、占比前后、幅度条）与**算子变化 Top**（节省最多的与增加最多的算子）；
+* 随时「清除对比」即可回到单采集视图；切换主数据集会自动解除配对（不会拿另一份采集当基线）。
+
+对比分析在**宿主侧**完成（`lib/analysis/compare.js`，接口 `GET /api/datasets/<before>/compare?with=<after>`），页面只负责摆放，因此同一套判定标准也适用于报告与自动化调用。
 
 ### 3.5 动效与可访问性
 
@@ -211,15 +228,30 @@ dsh --profile demo --from-default-profile web --port 3099 --no-open
 
 ![预期收益](docs/screenshots/08-benefit.png)
 
-完整页面长图见 [`09-full.png`](docs/screenshots/09-full.png)，深色主题见 [`11-dark-share.png`](docs/screenshots/11-dark-share.png)。重新生成：
+**第 6 步 · 优化后导入与前后对比**：导入优化后的采集结果后，给出结论句、四张 `前 → 后` 对比卡、可比性说明，以及第 5 步每条建议的达成校验
+
+![优化前后对比](docs/screenshots/12-compare-summary.png)
+
+第 3 步变成左右两张泳道图（左 = 优化前，右 = 优化后），上方是 delta 徽标
+
+![时序取证前后对比](docs/screenshots/13-compare-gantt.png)
+
+第 4 步变成两条构成条 + 两张耗时分布图，下方是大类与算子的变化表
+
+![占比归因前后对比](docs/screenshots/14-compare-share.png)
+
+完整页面长图见 [`09-full.png`](docs/screenshots/09-full.png)（对比模式见 [`15-compare-full.png`](docs/screenshots/15-compare-full.png)），深色主题见 [`11-dark-share.png`](docs/screenshots/11-dark-share.png)。重新生成：
 
 ```powershell
-# 1) 启动一个带插件的临时实例（见 §2 方式 C），并让它持有若干数据集
+# 1) 启动一个带插件的临时实例（见 §2 方式 C），并让它持有「优化前」数据集（如 host-schedule-bound）
 # 2) 启动带调试端口的无头浏览器
 msedge --headless=new --disable-gpu --user-data-dir=D:\tmp\edge --remote-debugging-port=9222 about:blank
-# 3) 抓图（等待渲染与动画结束 → 逐区域截图 → 逐步骤截图 → 演示一次联动筛选）
-node tools/capture-page.mjs --url http://127.0.0.1:3099/vllm-ascend-profiler/ --out docs/screenshots --port 9222
+# 3) 抓图（等待渲染 → 逐区域截图 → 逐步骤截图 → 演示联动筛选 → 导入优化后产物抓前后对比）
+node tools/capture-page.mjs --url http://127.0.0.1:3099/vllm-ascend-profiler/ --out docs/screenshots --port 9222 `
+  --baseline host-schedule-bound --compare-dir test/fixtures/host-schedule-bound-optimized
 ```
+
+> `--compare-dir` 必须是**绝对路径或可解析到绝对路径**：DevTools 交给渲染进程的文件路径只能原样读取，相对路径会得到 0 字节文件并让上传以 `ERR_ACCESS_DENIED` 失败（工具内部已做 `resolve()`）。
 
 ---
 
@@ -257,27 +289,29 @@ dsh-plugin-vllm-ascend-profiler/
 │   │   ├── bottleneck.js        # ① 定位 + ② 证据（门限打分）
 │   │   ├── rootcause.js         # ③ 根因假设（vLLM-Ascend 机理库）
 │   │   ├── recommend.js         # ④ 方案 + ⑤ 预期收益
+│   │   ├── compare.js           # 前后对比：指标 delta / 大类与算子变化 / 建议达成校验 / 可比性
 │   │   └── thresholds.js        # 全部门限常量 + 取值依据
 │   └── report/
 │       ├── markdown.js          # Markdown 报告
 │       └── print.js             # 打印/PDF 版 HTML
 ├── web/                         # 独立可视化页面（原生 Canvas/SVG，无第三方前端依赖）
-│   ├── index.html               # 三大模块 + 导入区 + 说明文档
+│   ├── index.html               # 六步流程 + 导入区 + 说明文档
 │   ├── styles.css               # 明暗主题（prefers-color-scheme）
 │   ├── util.js  api.js          # 工具与 API 客户端（XHR 上传进度）
 │   ├── gantt.js                 # 模块一：Canvas 泳道时序图
 │   ├── diagram.js               # 图形基元：treemap / 构成条 / 门限对比 / 收益区间 / 推理链 / 根因链
 │   ├── charts.js                # 模块二：占比与排行投影 + 数据表 + PNG 导出
 │   ├── advice-view.js           # 模块三：①→⑤ 流程 + 单面板图块
+│   ├── compare-view.js          # 第 6 步：前后对比面板 / delta 徽标 / 变化表
 │   ├── docs-view.js             # 说明文档渲染
 │   └── app.js                   # 页面控制器
 ├── docs/
 │   ├── metrics-and-fields.md    # 指标含义 + profiling 字段说明
-│   ├── analysis-logic.md        # 分析推理链、门限表、收益推算公式
+│   ├── analysis-logic.md        # 分析推理链、门限表、收益推算公式、前后对比判定规则
 │   ├── research/                # 产物格式调研（带官方文档/源码引用）
 │   └── screenshots/             # 界面截图
 ├── tools/capture-page.mjs       # 开发工具：DevTools 协议驱动无头浏览器抓图
-└── test/                        # 86 个用例 + 场景夹具生成器 + 真实 trace 夹具
+└── test/                        # 96 个用例 + 场景夹具生成器 + 真实 trace 夹具
 ```
 
 ### 数据流
@@ -342,7 +376,7 @@ node test/web-dom.test.mjs            # 前端三模块真实渲染 + 控制器 
 node test/client-bundle.test.mjs      # 浏览器插件包的加载、注册与降级
 ```
 
-当前状态：**88 个用例全部通过**（CI 在 Node 22 与 24 上跑同一套，见 [`.github/workflows/test.yml`](.github/workflows/test.yml)）。
+当前状态：**96 个用例全部通过**（CI 在 Node 22 与 24 上跑同一套，见 [`.github/workflows/test.yml`](.github/workflows/test.yml)）。
 
 值得说明的验证强度：
 

@@ -28,6 +28,10 @@
   const state = {
     /** @type {object|undefined} */ viewModel: undefined,
     gantt: undefined,
+    /** Second swimlane for the optimized capture (created on first comparison). */
+    ganttAfter: undefined,
+    /** `{ beforeId, afterId, view, comparison }` once an optimized capture is paired. */
+    compare: undefined,
     health: undefined,
     datasets: [],
     busy: false,
@@ -47,6 +51,7 @@
     cacheElements();
     restorePreferences();
     bindIntake();
+    bindCompare();
     bindControls();
     bindStepper();
     state.gantt = new VAP.GanttView({
@@ -65,7 +70,10 @@
     });
     renderLegend();
     await Promise.all([loadHealth(), loadDocs(), refreshDatasetList()]);
-    global.addEventListener('resize', VAP.debounce(() => state.gantt.resize(), 120));
+    global.addEventListener('resize', VAP.debounce(() => {
+      state.gantt.resize();
+      state.ganttAfter?.resize();
+    }, 120));
     global.addEventListener('keydown', (event) => {
       if (event.key === 'Escape') {
         clearFilters();
@@ -85,9 +93,19 @@
       'module-gantt', 'gantt-legend', 'gantt-groups', 'gantt-filters', 'gantt-play', 'gantt-speed',
       'gantt-zoom-in', 'gantt-zoom-out', 'gantt-reset', 'gantt-sort', 'gantt-limit',
       'gantt-canvas', 'gantt-tooltip', 'gantt-cursor', 'gantt-hint',
+      'gantt-compare-grid', 'gantt-before-pane', 'gantt-before-head', 'gantt-before-note',
+      'gantt-after-pane', 'gantt-after-note', 'gantt-canvas-after', 'gantt-tooltip-after',
+      'gantt-cursor-after', 'gantt-hint-after', 'gantt-deltas', 'gantt-compare-summary',
       'module-share', 'share-dimension', 'share-scope', 'share-topn', 'share-bar-note',
       'share-bar-host', 'share-bar-legend', 'treemap-host', 'ranking-details', 'ranking-host',
+      'share-compare-grid', 'share-before-pane', 'share-before-head', 'share-before-note',
+      'share-after-pane', 'share-after-note', 'share-bar-note-after', 'share-bar-host-after',
+      'share-bar-legend-after', 'treemap-host-after', 'ranking-host-after', 'share-deltas', 'share-compare-summary',
       'module-advice', 'advice-priority', 'advice-chain',
+      'module-compare', 'compare-intake', 'compare-dropzone', 'compare-file-input',
+      'compare-path-input', 'compare-path-button', 'compare-pair', 'compare-clear',
+      'compare-progress-wrap', 'compare-progress-detail', 'compare-progress-percent', 'compare-progress-bar',
+      'compare-error', 'compare-summary',
       'modal', 'modal-title', 'modal-body', 'modal-close', 'health-line',
     ];
     for (const id of ids) el[camel(id)] = document.getElementById(id);
@@ -164,72 +182,134 @@
     });
   }
 
-  /** Upload a file set as one collection job, showing byte-level progress. */
-  async function uploadFiles(files) {
+  /**
+   * Upload a file set as one collection job, showing byte-level progress.
+   *
+   * @param {File[]} files - files to upload.
+   * @param {'primary'|'compare'} [target] - which dataset slot the result fills.
+   */
+  async function uploadFiles(files, target = 'primary') {
     if (state.busy) return;
     setBusy(true);
     clearAlerts();
-    showProgress();
+    if (target === 'compare') clearCompareError();
+    else showProgress();
     const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
     try {
+      const label = datasetLabel(files);
       logProgress(`创建收集任务（${String(files.length)} 个文件，共 ${VAP.formatBytes(totalBytes)}）`);
-      const collection = await VAP.api.postJson('/jobs', { collect: true, label: files.map((file) => file.name).join(' + ').slice(0, 120) });
+      const collection = await VAP.api.postJson('/jobs', { collect: true, label });
       let uploaded = 0;
       for (const [index, file] of files.entries()) {
         const base = uploaded;
         await VAP.api.uploadFile(collection.id, file, undefined, (loaded) => {
           const done = base + loaded;
-          setProgress((done / Math.max(1, totalBytes)) * 18, `上传 ${file.name}：${VAP.formatBytes(done)} / ${VAP.formatBytes(totalBytes)}`, 'inspect');
+          reportProgress(target, (done / Math.max(1, totalBytes)) * 18, `上传 ${file.name}：${VAP.formatBytes(done)} / ${VAP.formatBytes(totalBytes)}`, 'inspect');
         });
         uploaded += file.size;
         logProgress(`已上传 ${String(index + 1)}/${String(files.length)}：${file.name}`);
       }
-      setProgress(20, '上传完成，开始解析', 'inspect');
+      reportProgress(target, 20, '上传完成，开始解析', 'inspect');
       const started = await VAP.api.postJson(`/jobs/${collection.id}/start`, {});
-      await trackJob(started.id ?? collection.id);
+      await trackJob(started.id ?? collection.id, target);
     } catch (error) {
-      showError(error.message);
+      if (target === 'compare') showCompareError(error.message);
+      else showError(error.message);
       setBusy(false);
     }
   }
 
-  /** Start a server-side path analysis. */
-  async function analyzePath() {
-    if (state.busy) return;
-    const path = el.pathInput.value.trim();
+  /**
+   * Label a dataset from the uploaded files.
+   *
+   * Dragging a folder gives every file a `webkitRelativePath`, so the folder name
+   * is available and is by far the clearest label ("host-schedule-bound"); a file
+   * picker with several files has no such context, and joining the names produced
+   * an unreadable chip, so it becomes "N 个文件" instead.
+   */
+  function datasetLabel(files) {
+    const relative = files.map((file) => file.webkitRelativePath ?? '').find((path) => path.includes('/'));
+    if (relative !== undefined) return relative.split('/')[0].slice(0, 60);
+    if (files.length === 1) return files[0].name;
+    return `${String(files.length)} 个文件`;
+  }
+
+  /**
+   * Start a server-side path analysis.
+   *
+   * @param {'primary'|'compare'} [target] - which dataset slot the result fills.
+   */
+  async function analyzePath(target = 'primary') {
+    if (state.busy) {
+      return;
+    }
+    const input = target === 'compare' ? el.comparePathInput : el.pathInput;
+    const path = input.value.trim();
     if (path === '') {
-      showError('请填写 profiling 文件或目录路径');
+      if (target === 'compare') showCompareError('请填写优化后产物的路径');
+      else showError('请填写 profiling 文件或目录路径');
       return;
     }
     setBusy(true);
     clearAlerts();
-    showProgress();
+    if (target === 'compare') clearCompareError();
+    else showProgress();
     try {
       logProgress(`提交路径分析：${path}`);
-      setProgress(6, '服务端读取并校验文件', 'inspect');
+      reportProgress(target, 6, '服务端读取并校验文件', 'inspect');
       const created = await VAP.api.postJson('/jobs', { path, label: path.split(/[\\/]/).pop() });
-      await trackJob(created.id);
+      await trackJob(created.id, target);
     } catch (error) {
-      showError(error.message);
+      if (target === 'compare') {
+        showCompareError(error.message);
+      } else {
+        showError(error.message);
+      }
       setBusy(false);
     }
   }
 
-  /** Poll a job, driving the staged progress bar, then load the dataset. */
-  async function trackJob(jobId) {
+  /** Route job progress to the primary or the compare panel. */
+  function reportProgress(target, percent, detail, phase) {
+    if (target !== 'compare') {
+      setProgress(percent, detail, phase);
+      return;
+    }
+    el.compareProgressWrap.hidden = false;
+    el.compareProgressBar.style.width = `${String(Math.max(0, Math.min(100, percent)))}%`;
+    el.compareProgressPercent.textContent = `${String(Math.round(percent))}%`;
+    if (detail !== undefined && detail !== '') el.compareProgressDetail.textContent = detail;
+  }
+
+  /**
+   * Poll a job, driving the staged progress bar, then load the dataset.
+   *
+   * @param {string} jobId - job id.
+   * @param {'primary'|'compare'} [target] - which dataset slot the result fills.
+   */
+  async function trackJob(jobId, target = 'primary') {
     try {
       const job = await VAP.api.waitForJob(jobId, (tick) => {
-        setProgress(20 + (tick.progress / 100) * 76, tick.detail ?? '', tick.phase);
+        reportProgress(target, 20 + (tick.progress / 100) * 76, tick.detail ?? '', tick.phase);
         if (tick.detail !== undefined) logProgress(`${phaseLabel(tick.phase)} · ${tick.detail}`);
       });
-      setProgress(100, '解析完成', 'analyze');
+      reportProgress(target, 100, '解析完成', 'analyze');
       logProgress(`解析完成：${String(job.summary?.events ?? 0)} 个事件，用时 ${String(((job.summary?.elapsedMs ?? 0) / 1000).toFixed(1))}s`);
-      if ((job.warnings ?? []).length > 0) showWarnings(job.warnings);
+      if ((job.warnings ?? []).length > 0 && target !== 'compare') showWarnings(job.warnings);
       await refreshDatasetList();
-      if (job.datasetId !== undefined) await loadDataset(job.datasetId);
+      if (job.datasetId !== undefined) {
+        if (target === 'compare') await attachCompare(job.datasetId);
+        else await loadDataset(job.datasetId);
+      }
+      if (target === 'compare') el.compareProgressWrap.hidden = true;
     } catch (error) {
-      showError(error.message);
-      if (error.job !== undefined && (error.job.warnings ?? []).length > 0) showWarnings(error.job.warnings);
+      if (target === 'compare') {
+        showCompareError(error.message);
+        el.compareProgressWrap.hidden = true;
+      } else {
+        showError(error.message);
+        if (error.job !== undefined && (error.job.warnings ?? []).length > 0) showWarnings(error.job.warnings);
+      }
     } finally {
       setBusy(false);
     }
@@ -239,10 +319,13 @@
   async function loadDataset(id) {
     try {
       const viewModel = await VAP.api.getDataset(id);
+      // The comparison is tied to one baseline: switching away from it drops the
+      // pairing rather than silently comparing against a different capture.
+      if (state.compare !== undefined && state.compare.beforeId !== id) clearCompare({ silent: true });
       state.viewModel = viewModel;
       state.collapsed = new Set(id === state.viewModel.datasetId ? state.collapsed : []);
       clearFilters({ silent: true });
-      for (const section of [el.overview, el.moduleGantt, el.moduleShare, el.moduleAdvice]) section.hidden = false;
+      for (const section of [el.overview, el.moduleGantt, el.moduleShare, el.moduleAdvice, el.moduleCompare]) section.hidden = false;
       playEnter(el.overview, 'enter');
       playEnter(el.moduleGantt, 'enter-2');
       playEnter(el.moduleShare, 'enter-2');
@@ -283,6 +366,186 @@
 
   function markActiveDataset(id) {
     for (const item of el.datasetList.children) item.classList.toggle('active', item.dataset.id === id);
+  }
+
+  // ── step 6: optimized capture + before/after comparison ──────────────────
+
+  /**
+   * Pair the current dataset with an optimized capture and render the comparison.
+   *
+   * The comparison payload is computed host-side (`/compare`), so the page only
+   * has to place it: step 3 gets a second swimlane, step 4 a second composition
+   * strip and treemap, and step 6 the headline, warnings and per-advice verdicts.
+   */
+  async function attachCompare(afterId) {
+    const beforeId = state.viewModel?.datasetId;
+    if (beforeId === undefined) {
+      showCompareError('请先在第 1 步导入优化前的产物，再导入优化后的采集结果');
+      return;
+    }
+    if (afterId === beforeId) {
+      showCompareError('优化后的数据集不能与优化前相同：请导入另一次采集的产物');
+      return;
+    }
+    setBusy(true);
+    clearCompareError();
+    try {
+      const [afterView, payload] = await Promise.all([
+        VAP.api.getDataset(afterId),
+        VAP.api.compare(beforeId, afterId),
+      ]);
+      state.compare = { beforeId, afterId, view: afterView, comparison: payload.comparison };
+      renderCompare();
+    } catch (error) {
+      showCompareError(error.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** Render everything that depends on the comparison. */
+  function renderCompare() {
+    const compare = state.compare;
+    if (compare === undefined) return;
+    const { comparison, view } = compare;
+
+    el.compareIntake.hidden = true;
+    el.compareSummary.hidden = false;
+    el.comparePair.textContent = `优化前 ${comparison.sides.before.label} → 优化后 ${comparison.sides.after.label}`;
+    el.compareClear.hidden = false;
+    el.compareSummary.replaceChildren(VAP.compareView.renderCompareSummary(comparison));
+
+    // ── step 3: two swimlanes side by side ────────────────────────────────
+    el.ganttCompareGrid.classList.add('split');
+    el.ganttBeforeHead.hidden = false;
+    el.ganttBeforeNote.textContent = `${comparison.sides.before.label} · ${formatCount(comparison.sides.before.eventCount)} 事件 · 每步 ${formatUs(comparison.headline.stepBeforeUs)}`;
+    el.ganttAfterPane.hidden = false;
+    el.ganttAfterNote.textContent = `${comparison.sides.after.label} · ${formatCount(comparison.sides.after.eventCount)} 事件 · 每步 ${formatUs(comparison.headline.stepAfterUs)}`;
+    el.ganttDeltas.hidden = false;
+    el.ganttDeltas.replaceChildren(VAP.compareView.renderDeltaStrip(comparison));
+    if (state.ganttAfter === undefined) {
+      state.ganttAfter = new VAP.GanttView({
+        canvas: el.ganttCanvasAfter,
+        tooltip: el.ganttTooltipAfter,
+        cursorLabel: el.ganttCursorAfter,
+        hintLabel: el.ganttHintAfter,
+      });
+    }
+    state.ganttAfter.setData(view);
+    state.ganttAfter.setOptions({ sortMode: el.ganttSort.value, rowLimit: Number(el.ganttLimit.value) });
+    el.ganttCompareSummary.hidden = false;
+    el.ganttCompareSummary.replaceChildren(h('p.compare-note', {}, `优化后：${comparison.headline.summary}`));
+
+    // ── step 4: second strip + treemap, plus the delta tables ─────────────
+    el.shareCompareGrid.classList.add('split');
+    el.shareBeforeHead.hidden = false;
+    el.shareBeforeNote.textContent = `${comparison.sides.before.label} · 每步 ${formatUs(comparison.headline.stepBeforeUs)}`;
+    el.shareAfterPane.hidden = false;
+    el.shareAfterNote.textContent = `${comparison.sides.after.label} · 每步 ${formatUs(comparison.headline.stepAfterUs)}`;
+    renderShareAfter(view);
+    el.shareDeltas.hidden = false;
+    el.shareDeltas.replaceChildren(VAP.compareView.renderDeltaTable(comparison));
+    el.shareCompareSummary.hidden = false;
+    el.shareCompareSummary.replaceChildren(h('p.compare-note', {}, `优化前 ${(comparison.headline.stepBeforeUs / 1000).toFixed(2)}ms/步 → 优化后 ${(comparison.headline.stepAfterUs / 1000).toFixed(2)}ms/步（${comparison.headline.stepPct > 0 ? '+' : '−'}${Math.abs(comparison.headline.stepPct).toFixed(1)}%）；左右两侧使用同一统计口径与同一门限。`));
+
+    for (const section of [el.moduleGantt, el.moduleShare, el.moduleCompare]) playEnter(section, 'enter');
+    state.ganttAfter.resize();
+  }
+
+  /** Step 4's "after" strip and treemap (same controls, the other dataset). */
+  function renderShareAfter(viewModel) {
+    const dimension = currentDimension();
+    const scope = el.shareScope.value;
+    const tiles = Number(el.shareTopn.value);
+    const categories = VAP.charts.buildCategories({ dataset: viewModel, scope });
+    const strip = VAP.diagram.shareBar({ items: categories });
+    el.shareBarHostAfter.replaceChildren(strip.element);
+    el.shareBarLegendAfter.replaceChildren(...[...strip.legend.children]);
+    el.shareBarNoteAfter.textContent = `${scope === 'all' ? '全部算子' : scope === 'host' ? 'Host 侧' : '设备侧'} · 合计 ${formatUs(categories.reduce((sum, item) => sum + item.totalUs, 0))}`;
+
+    const ranking = VAP.charts.buildRanking({ dataset: viewModel, dimension, scope, topN: tiles });
+    el.treemapHostAfter.replaceChildren(VAP.diagram.treemap({ rows: ranking.rows, dimension }).element);
+    el.rankingHostAfter.hidden = false;
+    el.rankingHostAfter.replaceChildren(VAP.charts.renderRankingTable(ranking.rows, {}));
+  }
+
+  /** Drop the pairing and restore the single-capture view. */
+  function clearCompare({ silent = false } = {}) {
+    if (state.compare === undefined) {
+      if (!silent) showCompareError('当前没有前后对比');
+      return;
+    }
+    state.compare = undefined;
+    el.compareIntake.hidden = false;
+    el.compareSummary.hidden = true;
+    el.compareSummary.replaceChildren();
+    el.comparePair.textContent = '';
+    el.compareClear.hidden = true;
+    el.compareProgressWrap.hidden = true;
+    el.ganttCompareGrid.classList.remove('split');
+    el.ganttBeforeHead.hidden = true;
+    el.ganttAfterPane.hidden = true;
+    el.ganttDeltas.hidden = true;
+    el.ganttDeltas.replaceChildren();
+    el.ganttCompareSummary.hidden = true;
+    el.ganttCompareSummary.replaceChildren();
+    el.shareCompareGrid.classList.remove('split');
+    el.shareBeforeHead.hidden = true;
+    el.shareAfterPane.hidden = true;
+    el.shareDeltas.hidden = true;
+    el.shareDeltas.replaceChildren();
+    el.shareCompareSummary.hidden = true;
+    el.shareCompareSummary.replaceChildren();
+    el.shareBarHostAfter.replaceChildren();
+    el.shareBarLegendAfter.replaceChildren();
+    el.treemapHostAfter.replaceChildren();
+    el.rankingHostAfter.replaceChildren();
+    el.rankingHostAfter.hidden = true;
+    state.ganttAfter?.clear();
+    clearCompareError();
+  }
+
+  function showCompareError(message) {
+    el.compareError.hidden = false;
+    el.compareError.replaceChildren(h('strong', {}, '对比失败：'), escapeHtml(message));
+  }
+
+  function clearCompareError() {
+    el.compareError.hidden = true;
+    el.compareError.replaceChildren();
+  }
+
+  function bindCompare() {
+    const open = () => el.compareFileInput.click();
+    el.compareDropzone.addEventListener('click', open);
+    el.compareDropzone.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') open();
+    });
+    el.compareFileInput.addEventListener('change', () => {
+      if (el.compareFileInput.files.length > 0) void uploadFiles([...el.compareFileInput.files], 'compare');
+      el.compareFileInput.value = '';
+    });
+    for (const type of ['dragenter', 'dragover']) {
+      el.compareDropzone.addEventListener(type, (event) => {
+        event.preventDefault();
+        el.compareDropzone.classList.add('dragover');
+      });
+    }
+    for (const type of ['dragleave', 'drop']) {
+      el.compareDropzone.addEventListener(type, (event) => {
+        event.preventDefault();
+        el.compareDropzone.classList.remove('dragover');
+      });
+    }
+    el.compareDropzone.addEventListener('drop', (event) => {
+      const files = [...(event.dataTransfer?.files ?? [])];
+      if (files.length > 0) void uploadFiles(files, 'compare');
+    });
+    el.comparePathButton.addEventListener('click', () => void analyzePath('compare'));
+    el.comparePathInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') void analyzePath('compare');
+    });
+    el.compareClear.addEventListener('click', () => clearCompare());
   }
 
   // ── overview (verdict first, then actions) ──────────────────────────────
@@ -577,15 +840,18 @@
           sibling.setAttribute('aria-pressed', String(sibling === button));
         }
         renderShare();
+        renderShareAfterIfComparing();
       });
     }
     el.shareScope.addEventListener('change', () => {
       savePreferences({ scope: el.shareScope.value });
       renderShare();
+      renderShareAfterIfComparing();
     });
     el.shareTopn.addEventListener('change', () => {
       savePreferences({ topN: Number(el.shareTopn.value) });
       renderShare();
+      renderShareAfterIfComparing();
     });
     el.advicePriority.addEventListener('change', renderAdvice);
 
@@ -610,6 +876,12 @@
     }
   }
 
+  /** Step 4's after-pane follows the same dimension/scope/topN controls. */
+  function renderShareAfterIfComparing() {
+    if (state.compare === undefined) return;
+    renderShareAfter(state.compare.view);
+  }
+
   async function reanalyze(phase) {
     const viewModel = state.viewModel;
     if (viewModel === undefined || state.busy) return;
@@ -621,12 +893,28 @@
       viewModel.analysis = response.analysis;
       renderOverview();
       renderAdvice();
+      // The baseline moved, so the verdicts of the comparison must be recomputed
+      // against the same optimized capture.
+      if (state.compare !== undefined) await reloadComparison();
       playEnter(el.overview, 'enter');
     } catch (error) {
       showError(error.message);
     } finally {
       state.busy = false;
       el.phaseSelect.classList.remove('busy');
+    }
+  }
+
+  /** Re-fetch the comparison payload for the current pair (after a re-analysis). */
+  async function reloadComparison() {
+    const compare = state.compare;
+    if (compare === undefined) return;
+    try {
+      const payload = await VAP.api.compare(compare.beforeId, compare.afterId);
+      compare.comparison = payload.comparison;
+      renderCompare();
+    } catch (error) {
+      showCompareError(error.message);
     }
   }
 
@@ -680,7 +968,7 @@
         target.scrollIntoView({ behavior: VAP.motionEnabled() ? 'smooth' : 'auto', block: 'start' });
       });
     }
-    const sections = ['intake', 'overview', 'module-gantt', 'module-share', 'module-advice'];
+    const sections = ['intake', 'overview', 'module-gantt', 'module-share', 'module-advice', 'module-compare'];
     if (typeof IntersectionObserver !== 'function') return;
     const observer = new IntersectionObserver((entries) => {
       for (const entry of entries) {

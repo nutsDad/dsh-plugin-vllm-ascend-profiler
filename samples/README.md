@@ -37,19 +37,30 @@ for (const [name, content] of Object.entries(files)) writeFileSync(`D:/tmp/quick
 | `profiler_info_0.json` | rank 元信息（设备型号、并行策略、CANN / torch_npu / vllm-ascend 版本） |
 | `communication.json` | HCCL 通信算子汇总（名称、通信组、单次耗时、消息大小） |
 
-## 三个场景与预期结论
+## 四个场景与预期结论
 
-三个场景故意做成**互相可区分**，用来验证"结论确实随产物变化"：
+四个场景故意做成**互相可区分**，用来验证"结论确实随产物变化"；其中前两个是一对**优化前 / 优化后**：
 
 | 场景 | 步数 | 生成规模 | 预期瓶颈 | 形态 |
 | --- | --- | --- | --- | --- |
 | `host-schedule-bound` | 20 | 约 36k 事件 / 6.4 MB | **Host 调度瓶颈 96.5** | eager decode：Host 每步派发 ~1500 个算子与同步，设备频繁空闲，NPU 忙碌率低（~33%） |
+| `host-schedule-bound-optimized` | 20 | 约 16k 事件 / 3.4 MB | **Host 调度瓶颈 87.6** | **与上一行配对**的"优化后"采集：图模式把逐步下发合并成一次回放，每步墙钟 −45%、NPU 忙碌率 33% → 60%、派发算子数/步 −59% |
 | `decode-comm-bound` | 24 | 约 10k 事件 / 2.6 MB | **跨卡通信瓶颈 90.0** | TP=8 decode：每层小消息 AllReduce（96 KB）且**未与计算重叠**，通信未掩盖比例高 |
 | `prefill-compute-bound` | 6 | 约 6.7k 事件 / 1.3 MB | **NPU 计算瓶颈 94.8** | chunked prefill：长步、MatMul/FlashAttention 主导，MAC 利用率高、通信占比低 |
 
 > 上表数值由生成器产出后经插件自身 `parseProfileSet → buildDataset → analyzeDataset` 实测。
 > 想调成贴近自己负载的形状：改 `test/make-fixture.mjs` 顶部 `SCENARIOS` 里的每步算子数、MatMul/Attention 时长、
 > 通信是否重叠、消息大小、Host 每步派发数等参数，再重新生成即可。
+
+### 试第 6 步的前后对比
+
+先导入 `host-schedule-bound`（优化前），再到第 6 步导入 `host-schedule-bound-optimized`（优化后），页面会：
+
+* 第 3 步给出左右两张泳道图（左 before / 右 after）与一排 delta 徽标；
+* 第 4 步给出两条大类构成条 + 两张耗时分布图，以及大类 / 算子的变化表；
+* 第 6 步给出结论句、四张 `前 → 后` 对比卡、可比性说明，以及第 5 步每条建议的 `已达成 / 部分达成 / 未达成 / 无法判定`。
+
+预期结果（`test/compare.test.mjs` 就是按这组数值断言的）：每步墙钟 −45%、NPU 忙碌率 +27pt、Host 独占/步 −79%、派发算子数/步 −59%，"启用图模式 / 减少逐步下发 / 消除同步点"三条建议达成；由于墙钟缩短，**通信未掩盖占比**从 0.31% 升到 0.57%（绝对值几乎不变），页面会把它解释为"占比类指标反向变化"，而不是性能退化。
 
 ## 导入方式
 

@@ -117,6 +117,8 @@
       docs: () => getJson('/docs'),
       listDatasets: () => getJson('/datasets'),
       getDataset: (id) => getJson(`/datasets/${id}`),
+      /** Compare two datasets: `beforeId` is the baseline, `afterId` the optimized capture. */
+      compare: (beforeId, afterId) => getJson(`/datasets/${beforeId}/compare?with=${encodeURIComponent(afterId)}`),
       analyze: (id, options) => postJson(`/datasets/${id}/analyze`, options),
       postCharts: (id, charts) => postJson(`/datasets/${id}/charts`, { charts }),
       deleteDataset: async (id) => {

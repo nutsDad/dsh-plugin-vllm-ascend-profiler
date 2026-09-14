@@ -212,6 +212,52 @@ test('uploads a collection file by file, then parses it', async () => {
   assert.equal(job.datasetId !== undefined, true);
 });
 
+/**
+ * Step 6 of the page needs the two captures compared host-side: the same
+ * pipeline that proves a bottleneck must prove the improvement, and the payload
+ * has to be a plain JSON body the page can render directly.
+ */
+test('compares two datasets for the before/after step', async () => {
+  const route = mountPlugin();
+  const ids = {};
+  for (const scenario of ['host-schedule-bound', 'host-schedule-bound-optimized']) {
+    const create = await request(route, {
+      method: 'POST',
+      path: '/vllm-ascend-profiler/api/jobs',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: join(here, 'fixtures', scenario), label: scenario }),
+    });
+    assert.equal(create.status, 202);
+    const job = await waitForJob(route, create.json().id);
+    assert.equal(job.state, 'done', JSON.stringify(job.errors));
+    ids[scenario] = job.datasetId;
+  }
+
+  const compared = await request(route, {
+    path: `/vllm-ascend-profiler/api/datasets/${ids['host-schedule-bound']}/compare?with=${ids['host-schedule-bound-optimized']}`,
+  });
+  assert.equal(compared.status, 200, compared.body.slice(0, 200));
+  const payload = compared.json();
+  assert.equal(payload.ok, true);
+  const comparison = payload.comparison;
+  assert.equal(comparison.sides.before.label, 'host-schedule-bound');
+  assert.equal(comparison.sides.after.label, 'host-schedule-bound-optimized');
+  assert.ok(comparison.headline.stepPct < -30, `step change ${String(comparison.headline.stepPct)}%`);
+  assert.ok(comparison.recommendations.some((item) => item.verdict === 'achieved'));
+  assert.ok(Array.isArray(comparison.categories) && comparison.categories.length > 0);
+  assert.ok(Array.isArray(comparison.warnings));
+
+  // Typed errors, not stack traces.
+  const missing = await request(route, { path: `/vllm-ascend-profiler/api/datasets/${ids['host-schedule-bound']}/compare` });
+  assert.equal(missing.status, 400);
+  assert.match(missing.json().error, /with/);
+  const unknown = await request(route, {
+    path: `/vllm-ascend-profiler/api/datasets/${ids['host-schedule-bound']}/compare?with=00000000-0000-0000-0000-000000000000`,
+  });
+  assert.equal(unknown.status, 404);
+  assert.match(unknown.json().error, /不存在|过期/);
+});
+
 test('a rejected upload produces a precise error, not an empty report', async () => {
   const route = mountPlugin();
   const collection = await request(route, {

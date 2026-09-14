@@ -7,7 +7,7 @@ import vm from 'node:vm';
 
 import { parseProfileSet } from '../lib/parse/index.js';
 import { buildDataset } from '../lib/model/dataset.js';
-import { analyzeDataset } from '../lib/analysis/index.js';
+import { analyzeDataset, compareCaptures } from '../lib/analysis/index.js';
 import { buildViewModel } from '../lib/view.js';
 import { documentationBundle } from '../lib/docs.js';
 
@@ -119,8 +119,17 @@ class FakeNode {
   append(...nodes) {
     for (const node of nodes) {
       if (node === undefined || node === null) continue;
-      this._nodes.push(node);
-      if (node instanceof FakeNode) node.parentElement = this;
+      if (node instanceof FakeNode) {
+        this._nodes.push(node);
+        node.parentElement = this;
+        continue;
+      }
+      // The real DOM converts anything else into a text node — including the
+      // plain strings `replaceChildren('…')` is documented to accept. Dropping
+      // them silently would let a page that writes `replaceChildren(el, 'text')`
+      // look correct in a test while rendering nothing in the browser.
+      const text = typeof node === 'object' && node.textContent !== undefined ? node.textContent : String(node);
+      this._nodes.push({ textContent: text, nodeType: 3 });
     }
   }
 
@@ -183,21 +192,36 @@ class FakeNode {
     return matches;
   }
 
-  /** Minimal selector support: `tag`, `.class`, `[attr]`, `tag[attr="v"]`, `[attr="v"]`. */
+  /**
+   * Minimal compound-selector support: `tag`, `.class`, `#id`, `[attr]`,
+   * `[attr="v"]` and any combination of them (`div.a.b[data-x="y"]`).
+   *
+   * No descendant combinators — the page itself only uses compound selectors, and
+   * silently matching nothing for an unsupported selector would be worse than not
+   * supporting it, so an unparsable selector simply does not match.
+   */
   matches(selector) {
     for (const part of selector.split(',').map((value) => value.trim())) {
       if (part === '') continue;
-      const match = /^([a-zA-Z]*)(?:\.([\w-]+))?(?:\[([\w-]+)(?:="([^"]*)")?\])?$/.exec(part);
-      if (match === null) continue;
-      const [, tag, className, attr, attrValue] = match;
-      if (tag !== '' && this.tagName.toLowerCase() !== tag.toLowerCase()) continue;
-      if (className !== undefined && !this._classes.has(className)) continue;
-      if (attr !== undefined) {
-        const value = this.getAttribute(attr);
-        if (value === null) continue;
-        if (attrValue !== undefined && value !== attrValue) continue;
+      const parsed = /^([a-zA-Z][\w-]*)?((?:[.#][\w-]+|\[[\w-]+(?:="[^"]*")?\])*)$/.exec(part);
+      if (parsed === null) continue;
+      const [, tag, rest] = parsed;
+      if (tag !== undefined && this.tagName.toLowerCase() !== tag.toLowerCase()) continue;
+      let ok = true;
+      for (const piece of rest.match(/[.#][\w-]+|\[[\w-]+(?:="[^"]*")?\]/g) ?? []) {
+        if (piece.startsWith('.')) {
+          if (!this._classes.has(piece.slice(1))) { ok = false; break; }
+          continue;
+        }
+        if (piece.startsWith('#')) {
+          if (this.id !== piece.slice(1)) { ok = false; break; }
+          continue;
+        }
+        const attr = /^\[([\w-]+)(?:="([^"]*)")?\]$/.exec(piece);
+        const value = this.getAttribute(attr[1]);
+        if (value === null || (attr[2] !== undefined && value !== attr[2])) { ok = false; break; }
       }
-      return true;
+      if (ok) return true;
     }
     return false;
   }
@@ -426,7 +450,7 @@ function loadPage({ withHtmlIds = false, fetchImpl, noMotion = false } = {}) {
   sandbox.globalThis = sandbox;
   if (noMotion) sandbox.document.body.classList.add('no-motion');
   vm.createContext(sandbox);
-  for (const file of ['util.js', 'api.js', 'diagram.js', 'charts.js', 'gantt.js', 'docs-view.js', 'advice-view.js', 'app.js']) {
+  for (const file of ['util.js', 'api.js', 'diagram.js', 'charts.js', 'gantt.js', 'docs-view.js', 'advice-view.js', 'compare-view.js', 'app.js']) {
     const source = readFileSync(join(webRoot, file), 'utf8');
     vm.runInContext(source, sandbox, { filename: file });
   }
@@ -435,12 +459,21 @@ function loadPage({ withHtmlIds = false, fetchImpl, noMotion = false } = {}) {
 
 /** Build a real view model from the host-schedule fixture. */
 async function loadViewModel() {
-  const inputs = readdirSync(fixtureDir).map((name) => ({ name, buffer: readFileSync(join(fixtureDir, name)) }));
+  return (await loadCapture(fixtureDir, 'host-schedule-bound', 'test-dataset')).viewModel;
+}
+
+/**
+ * Load one fixture directory into everything the page needs: the dataset and
+ * analysis (for computing a real comparison) plus the projected view model.
+ */
+async function loadCapture(directory, label, datasetId) {
+  const inputs = readdirSync(directory).map((name) => ({ name, buffer: readFileSync(join(directory, name)) }));
   const parse = await parseProfileSet({ inputs });
-  assert.equal(parse.ok, true);
+  assert.equal(parse.ok, true, `${label}: ${JSON.stringify(parse.errors)}`);
   const dataset = buildDataset(parse);
   const analysis = analyzeDataset(dataset);
-  return buildViewModel({ dataset, analysis, datasetId: 'test-dataset', label: 'host-schedule-bound' });
+  // `datasetId` / `label` are part of the shape `compareCaptures` consumes.
+  return { dataset, analysis, datasetId, label, viewModel: buildViewModel({ dataset, analysis, datasetId, label }) };
 }
 
 test('every page script loads in document order without throwing', () => {
@@ -451,6 +484,7 @@ test('every page script loads in document order without throwing', () => {
   assert.equal(typeof sandbox.VAP.charts.buildRanking, 'function');
   assert.equal(typeof sandbox.VAP.GanttView, 'function');
   assert.equal(typeof sandbox.VAP.advice.renderAdvice, 'function');
+  assert.equal(typeof sandbox.VAP.compareView.renderCompareSummary, 'function');
   assert.equal(typeof sandbox.VAP.docsView.renderDocs, 'function');
 });
 
@@ -819,15 +853,37 @@ test('every element id the controller caches exists in index.html', () => {
 
 /** A UUID-shaped dataset id: the page treats ids as opaque, but the stub routes on shape. */
 const DATASET_ID = '11111111-2222-3333-4444-555555555555';
+const AFTER_ID = '99999999-8888-7777-6666-555555555555';
+const JOB_ID = 'aaaa1111-bbbb-2222-cccc-333333333333';
+const afterFixtureDir = join(here, 'fixtures', 'host-schedule-bound-optimized');
 
 /**
  * Boot the whole page against a real dataset: real view model, stubbed API.
  * This is the integration test for the controller — stepper, filters, charts and
  * advice are all exercised through the DOM the way a user would.
+ *
+ * With `withCompare` the stub also serves the optimized capture and a real
+ * comparison payload (computed by `compareCaptures`), so step 6 and the
+ * before/after panes are driven exactly like in the browser.
  */
-async function bootPage({ withDataset = true, noMotion = true } = {}) {
+async function bootPage({ withDataset = true, noMotion = true, withCompare = false } = {}) {
   const bundle = documentationBundle({ version: '1.0.0' });
-  const viewModel = await loadViewModel();
+  /** Test switch: make the parse job hand back the baseline dataset id. */
+  const stubState = { sameDatasetAsBefore: false };
+  let comparison;
+  let afterViewModel;
+  let viewModel;
+  if (withCompare) {
+    // The baseline the page loads *is* the "before" side of the comparison, so it
+    // has to carry the same dataset id the stub routes on.
+    const before = await loadCapture(fixtureDir, 'host-schedule-bound', DATASET_ID);
+    const after = await loadCapture(afterFixtureDir, 'host-schedule-bound-optimized', AFTER_ID);
+    viewModel = before.viewModel;
+    afterViewModel = after.viewModel;
+    comparison = compareCaptures({ before, after });
+  } else {
+    viewModel = await loadViewModel();
+  }
   const sandbox = loadPage({
     withHtmlIds: true,
     // Geometry assertions need deterministic frames; animation itself is covered
@@ -843,6 +899,13 @@ async function bootPage({ withDataset = true, noMotion = true } = {}) {
         const requested = JSON.parse(options.body ?? '{}').phaseOverride;
         return { ok: true, json: async () => ({ ok: true, analysis: { ...viewModel.analysis, options: { ...viewModel.analysis.options, phaseOverride: requested } } }) };
       }
+      if (path.endsWith('/api/jobs') && options.method === 'POST') return { ok: true, json: async () => ({ id: JOB_ID, state: 'queued' }) };
+      if (path.includes(`/api/jobs/${JOB_ID}`)) {
+        const datasetId = stubState.sameDatasetAsBefore ? DATASET_ID : AFTER_ID;
+        return { ok: true, json: async () => ({ id: JOB_ID, state: 'done', progress: 100, phase: 'done', detail: '解析完成', warnings: [], datasetId, summary: { events: 10, elapsedMs: 5 } }) };
+      }
+      if (path.includes(`/api/datasets/${DATASET_ID}/compare`)) return { ok: true, json: async () => ({ ok: true, comparison }) };
+      if (path.includes(`/api/datasets/${AFTER_ID}`)) return { ok: true, json: async () => afterViewModel };
       if (path.includes(`/api/datasets/${DATASET_ID}`)) return { ok: true, json: async () => viewModel };
       if (path.includes('/api/datasets')) {
         return {
@@ -860,6 +923,7 @@ async function bootPage({ withDataset = true, noMotion = true } = {}) {
   await handler.handler();
   await nextFrame();
   await nextFrame();
+  sandbox.__stubState = stubState;
   return { sandbox, viewModel, registry };
 }
 
@@ -892,8 +956,96 @@ test('booting with a dataset renders every step of the pipeline', async () => {
   void viewModel;
 });
 
-test('a dataset warning is not shown, but a parse failure is', async () => {
-  const { sandbox } = await bootPage();
+/**
+ * Step 6: import the optimized capture, then read the before/after panes that
+ * step 3 and step 4 grow. Driven through the DOM (path input → job → dataset →
+ * comparison) so the wiring, not just the renderer, is under test.
+ */
+test('step 6 pairs an optimized capture and shows before/after in steps 3 and 4', async () => {
+  const { sandbox } = await bootPage({ withCompare: true });
+
+  // The pipeline now has six steps, and step 6 starts in "import" mode.
+  const steps = registry.get('stepper').querySelectorAll('.step');
+  assert.equal(steps.length, 6);
+  assert.deepEqual(steps.map((step) => step.dataset.step), ['intake', 'overview', 'module-gantt', 'module-share', 'module-advice', 'module-compare']);
+  assert.equal(registry.get('module-compare').hidden, false, 'step 6 is available once a baseline exists');
+  assert.equal(registry.get('compare-intake').hidden, false);
+  assert.equal(registry.get('compare-summary').hidden, true, 'no comparison before an optimized capture is attached');
+  assert.equal(registry.get('gantt-after-pane').hidden, true);
+
+  // Import the optimized capture through the path box.
+  registry.get('compare-path-input').value = 'D:\\profiles\\after\\_ascend_pt';
+  registry.get('compare-path-button').click();
+  await nextFrame();
+  await nextFrame();
+  await nextFrame();
+
+  assert.equal(registry.get('compare-intake').hidden, true, 'the import panel gives way to the comparison');
+  assert.equal(registry.get('compare-summary').hidden, false);
+  assert.match(registry.get('compare-pair').textContent, /优化前 host-schedule-bound → 优化后 host-schedule-bound-optimized/);
+  assert.equal(registry.get('compare-clear').hidden, false);
+
+  // Step 6 headline + per-advice verification.
+  const summary = registry.get('compare-summary').textContent;
+  assert.match(summary, /单步墙钟下降/);
+  assert.match(summary, /建议达成校验/);
+  assert.ok(registry.get('compare-summary').querySelectorAll('.verify-verdict.achieved').length >= 1, 'graph mode must be verified as achieved');
+  assert.ok(summary.includes('已达成'));
+
+  // Step 3: two swimlanes side by side, with the after canvas actually painted.
+  assert.ok(registry.get('gantt-compare-grid').classList.contains('split'), 'the swimlanes sit side by side');
+  assert.equal(registry.get('gantt-before-head').hidden, false);
+  assert.equal(registry.get('gantt-after-pane').hidden, false);
+  assert.ok(registry.get('gantt-canvas-after').width > 0, 'the optimized swimlane is sized');
+  assert.ok(registry.get('gantt-before-note').textContent.includes('host-schedule-bound'));
+  assert.ok(registry.get('gantt-after-note').textContent.includes('host-schedule-bound-optimized'));
+  const chips = registry.get('gantt-deltas').querySelectorAll('.delta-chip');
+  assert.ok(chips.length >= 5, `expected the headline deltas as chips, got ${String(chips.length)}`);
+  assert.ok(chips.some((chip) => /每步墙钟/.test(chip.textContent) && /−/.test(chip.textContent)), 'the step-time chip must show an improvement');
+
+  // Step 4: second strip + treemap, plus the delta tables.
+  assert.ok(registry.get('share-compare-grid').classList.contains('split'));
+  assert.equal(registry.get('share-after-pane').hidden, false);
+  assert.ok(registry.get('share-bar-host-after').children.length > 0, 'the optimized composition strip rendered');
+  assert.ok(registry.get('share-bar-legend-after').children.length > 0);
+  assert.ok(registry.get('treemap-host-after').children.length > 0, 'the optimized treemap rendered');
+  assert.equal(registry.get('share-deltas').hidden, false);
+  const deltaTables = registry.get('share-deltas').querySelectorAll('.delta-table');
+  assert.equal(deltaTables.length, 2, 'one table for categories, one for operators');
+  assert.match(deltaTables[0].textContent, /大类耗时/);
+  assert.match(deltaTables[0].textContent, /调度/);
+  assert.match(deltaTables[1].textContent, /MatMulV2|empty|aclrtSynchronizeStream/);
+  assert.equal(registry.get('ranking-host-after').hidden, false, 'the optimized data table is available too');
+
+  // Clearing the comparison restores the single-capture layout.
+  registry.get('compare-clear').click();
+  await nextFrame();
+  assert.equal(registry.get('compare-intake').hidden, false);
+  assert.equal(registry.get('gantt-after-pane').hidden, true);
+  assert.equal(registry.get('share-after-pane').hidden, true);
+  assert.equal(registry.get('gantt-compare-grid').classList.contains('split'), false);
+  assert.equal(registry.get('gantt-deltas').hidden, true);
+  assert.equal(registry.get('compare-clear').hidden, true);
+  void sandbox;
+});
+
+test('step 6 refuses to compare a dataset with itself', async () => {
+  const { sandbox } = await bootPage({ withCompare: true });
+  // Point the compare import at the baseline dataset: the stub then hands back
+  // the same id, which must be rejected instead of producing a no-op comparison.
+  sandbox.__stubState.sameDatasetAsBefore = true;
+  registry.get('compare-path-input').value = 'D:\\profiles\\before\\_ascend_pt';
+  registry.get('compare-path-button').click();
+  await nextFrame();
+  await nextFrame();
+  await nextFrame();
+  assert.equal(registry.get('compare-error').hidden, false);
+  assert.match(registry.get('compare-error').textContent, /不能与优化前相同|请先在第 1 步/);
+  assert.equal(registry.get('gantt-after-pane').hidden, true);
+  assert.equal(registry.get('compare-intake').hidden, false, 'the import panel stays available for another try');
+});
+
+test('a dataset warning is not shown, but a parse failure is', async () => {  const { sandbox } = await bootPage();
   assert.equal(registry.get('error-box').hidden, true);
   // Errors surface through the same box the intake flow uses.
   const dropzone = registry.get('dropzone');
@@ -981,8 +1133,8 @@ test('the play button toggles timeline playback', async () => {
 test('the stepper marks the section in view and scrolls on click', async () => {
   await bootPage();
   const steps = registry.get('stepper').querySelectorAll('.step');
-  assert.equal(steps.length, 5);
-  assert.deepEqual(steps.map((step) => step.dataset.step), ['intake', 'overview', 'module-gantt', 'module-share', 'module-advice']);
+  assert.equal(steps.length, 6);
+  assert.deepEqual(steps.map((step) => step.dataset.step), ['intake', 'overview', 'module-gantt', 'module-share', 'module-advice', 'module-compare']);
   // Clicking is a no-op scroll in the fake DOM, but the handler must exist.
   steps[2].click();
   assert.ok(steps[2].listenerCount > 0);
