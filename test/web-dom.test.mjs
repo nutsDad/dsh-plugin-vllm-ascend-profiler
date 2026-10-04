@@ -933,12 +933,31 @@ async function bootPage({ withDataset = true, noMotion = true, withCompare = fal
       }
       if (path.includes('/api/docs')) return { ok: true, json: async () => bundle };
       if (path.includes('/api/skills')) return { ok: true, json: async () => skillsPayload };
-      if (path.includes('/advice/') && path.endsWith('/handoff')) {
+      if (path.includes('/advice/') && (path.endsWith('/execute') || path.endsWith('/handoff'))) {
         return {
           ok: true,
           json: async () => ({
             ok: true,
-            task: { ...handoff, artifacts: { dir: 'D:/ws/.dsh-vap-tasks', markdownPath: 'D:/ws/.dsh-vap-tasks/task.md', jsonPath: 'D:/ws/.dsh-vap-tasks/task.json' } },
+            task: {
+              ...handoff,
+              artifacts: { dir: 'D:/ws/.dsh-vap-tasks', markdownPath: 'D:/ws/.dsh-vap-tasks/task.md', jsonPath: 'D:/ws/.dsh-vap-tasks/task.json' },
+              project: path.endsWith('/execute')
+                ? {
+                  ok: true,
+                  op: 'rms_norm_fused',
+                  kind: 'row-norm',
+                  title: '单趟融合 RMSNorm 算子',
+                  reason: '优化项 host.reduce-dispatch 属 dispatch 焦点',
+                  dir: 'D:/ws/operator-work/rms_norm_fused',
+                  summary: { optimization: '把行归一化融合成单趟 UB 内计算：平方与归约在同一 tile 完成' },
+                  files: [
+                    { path: 'csrc/ops/rms_norm_fused/op_kernel/rms_norm_fused.cpp', bytes: 8000 },
+                    { path: 'csrc/ops/rms_norm_fused/op_host/rms_norm_fused.cpp', bytes: 4000 },
+                    { path: 'csrc/ops/rms_norm_fused/design.md', bytes: 3000 },
+                  ],
+                }
+                : undefined,
+            },
           }),
         };
       }
@@ -1280,7 +1299,14 @@ test('执行 hands an advice item to the operator skills', async () => {
   const panel = chain.querySelectorAll('.handoff-panel');
   assert.equal(panel.length, 1, 'exactly the clicked item grows a task panel');
   const text = panel[0].textContent;
-  assert.match(text, /算子优化任务已生成/);
+  assert.match(text, /算子工程已生成/);
+  // 执行 now produces the operator project itself, not just a task description.
+  const project = panel[0].querySelectorAll('.handoff-section.project');
+  assert.equal(project.length, 1, 'the generated operator project is shown');
+  assert.match(project[0].textContent, /单趟融合 RMSNorm 算子/);
+  assert.match(project[0].textContent, /D:\/ws\/operator-work\/rms_norm_fused/);
+  assert.match(project[0].textContent, /op_kernel\/rms_norm_fused\.cpp/);
+  assert.match(project[0].textContent, /需要 CANN \+ 昇腾 NPU/);
   assert.match(text, /目标算子/);
   assert.match(text, new RegExp(handoff.operators[0].name), 'the task names the operator the host picked');
   assert.match(text, /执行的 skills（按顺序）/);

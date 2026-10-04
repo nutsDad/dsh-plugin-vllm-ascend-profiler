@@ -38,10 +38,33 @@
     const root = h('div.handoff-panel');
     const status = VERDICT_LABEL[task.status] ?? task.status;
     root.append(h('div.handoff-head', {}, [
-      h('span.handoff-title', {}, '算子优化任务已生成'),
+      h('span.handoff-title', {}, task.project?.ok === true ? '算子工程已生成' : '算子优化任务已生成'),
       h('span.chip.phase', {}, status),
       h('span.hint', {}, `目标 ${task.operators.length === 0 ? '—' : String(task.operators.length) + ' 个算子'} · skills ${String(task.skills.chain.length)} 个`),
     ]));
+
+    // 0) generated operator project (执行 produces this in the same round trip)
+    const project = task.project;
+    if (project !== undefined && project.ok === true) {
+      root.append(h('div.handoff-section.project', {}, [
+        h('div.handoff-section-title', {}, `已生成算子工程 · ${project.title}`),
+        h('p.handoff-optimisation', {}, project.summary?.optimization ?? ''),
+        h('dl.handoff-paths', {}, [
+          h('dt', {}, '工程目录'), h('dd.mono', {}, project.dir ?? '—'),
+          h('dt', {}, '生成类别'), h('dd', {}, `${project.kind}（${project.reason ?? ''}）`),
+        ]),
+        h('table.handoff-table', {}, [
+          h('thead', {}, [h('tr', {}, [h('th', {}, '生成文件'), h('th', {}, '大小')])]),
+          h('tbody', {}, (project.files ?? []).map((file) => h('tr', {}, [
+            h('td.mono', {}, file.path),
+            h('td.mono', {}, `${String(Math.round(file.bytes / 102.4) / 10)} KB`),
+          ]))),
+        ]),
+        h('p.hint', {}, '编译、精度与性能需要 CANN + 昇腾 NPU：按工程目录里的 README 与 register-patch.md 继续。'),
+      ]));
+    } else if (project !== undefined && project.ok === false) {
+      root.append(h('p.error-inline', {}, `算子工程生成失败：${project.error}`));
+    }
 
     // 1) operators
     if (task.operators.length > 0) {

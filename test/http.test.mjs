@@ -404,6 +404,52 @@ test('status page reports a 404 for an unknown asset', async () => {
   assert.match(res.body, /未找到该资源/);
 });
 
+test('执行 generates the operator project as well as the task', async () => {
+  const route = mountPlugin();
+  const create = await request(route, {
+    method: 'POST',
+    path: '/vllm-ascend-profiler/api/jobs',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ path: join(here, 'fixtures', 'prefill-compute-bound'), label: 'prefill-compute-bound' }),
+  });
+  assert.equal(create.status, 202);
+  const job = await waitForJob(route, create.json().id);
+  assert.equal(job.state, 'done', JSON.stringify(job.errors));
+
+  const workspace = mkdtempSync(join(tmpdir(), 'vap-execute-http-'));
+  const previous = process.cwd();
+  process.chdir(workspace);
+  try {
+    const res = await request(route, {
+      method: 'POST',
+      path: `/vllm-ascend-profiler/api/datasets/${job.datasetId}/advice/compute.quantize/execute`,
+    });
+    assert.equal(res.status, 200, res.body.slice(0, 300));
+    const task = res.json().task;
+    const project = task.project;
+    assert.equal(project.ok, true);
+    assert.equal(project.op, 'dyn_quant_dequant');
+    assert.equal(project.kind, 'quantize');
+    assert.match(project.summary.optimization, /量化与反量化融合/);
+    assert.equal(project.files.length, 6);
+    assert.equal(project.dir, join(workspace, 'operator-work', 'dyn_quant_dequant'));
+    for (const file of project.files) {
+      assert.ok(existsSync(join(project.dir, file.path)), `${file.path} must be written`);
+    }
+    // The task package is still written alongside the project.
+    assert.ok(existsSync(task.artifacts.markdownPath));
+
+    const unknown = await request(route, {
+      method: 'POST',
+      path: `/vllm-ascend-profiler/api/datasets/${job.datasetId}/advice/nope.nope/execute`,
+    });
+    assert.equal(unknown.status, 404);
+  } finally {
+    process.chdir(previous);
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
 test('the skills endpoint inventories the Ascend bundles it can see', async () => {
   const route = mountPlugin();
   const res = await request(route, { path: '/vllm-ascend-profiler/api/skills' });

@@ -126,6 +126,11 @@
        * skills; the host writes the package into the session workspace.
        */
       adviceHandoff: (datasetId, adviceId) => postJson(`/datasets/${datasetId}/advice/${encodeURIComponent(adviceId)}/handoff`, {}),
+      /**
+       * 执行: build the task **and** generate the optimised operator sources for it
+       * in one call; the host writes both into the session workspace.
+       */
+      executeAdvice: (datasetId, adviceId) => postJson(`/datasets/${datasetId}/advice/${encodeURIComponent(adviceId)}/execute`, {}),
       analyze: (id, options) => postJson(`/datasets/${id}/analyze`, options),
       postCharts: (id, charts) => postJson(`/datasets/${id}/charts`, { charts }),
       deleteDataset: async (id) => {

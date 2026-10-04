@@ -828,12 +828,14 @@
   }
 
   /**
-   * Hand one advice item to the Ascend operator-optimization skills.
+   * 执行: hand the advice to the Ascend operator-optimization skills **and** produce
+   * the optimised operator for it, in one round trip.
    *
-   * The host assembles the task (target operators, skill chain, acceptance bar)
-   * and writes it into the session workspace; the page only has to show it. The
-   * button is idempotent: pressing it again re-runs the handoff with the current
-   * analysis, which is what you want after a phase re-analysis.
+   * The host builds the task (target operators, skill chain, acceptance bar),
+   * generates the operator project (AscendC host + kernel + design + test cases +
+   * registration patch) and writes both into the session workspace; the page shows
+   * what landed. Pressing it again re-runs with the current analysis, which is what
+   * you want after a phase re-analysis.
    */
   async function executeAdvice(item) {
     const datasetId = state.viewModel?.datasetId;
@@ -841,7 +843,7 @@
     state.handoffs = { ...(state.handoffs ?? {}), [item.id]: { pending: true } };
     renderAdvice();
     try {
-      const payload = await VAP.api.adviceHandoff(datasetId, item.id);
+      const payload = await VAP.api.executeAdvice(datasetId, item.id);
       state.handoffs = { ...(state.handoffs ?? {}), [item.id]: { task: payload.task } };
     } catch (error) {
       state.handoffs = { ...(state.handoffs ?? {}), [item.id]: { error: error.message } };
