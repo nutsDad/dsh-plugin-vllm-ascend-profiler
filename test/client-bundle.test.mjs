@@ -17,7 +17,7 @@ const bundlePath = join(here, '..', 'lib', 'client.js');
  * client bundles are loaded as classic scripts, so a syntax error there would
  * otherwise surface as a blank GUI.
  */
-function loadBundle({ slots, services, openResult } = {}) {
+function loadBundle({ slots, services, openResult, location, injected } = {}) {
   const registrations = [];
   const warnings = [];
   const styles = [];
@@ -34,14 +34,20 @@ function loadBundle({ slots, services, openResult } = {}) {
     querySelector() {
       return null;
     },
+    // The bundle is a classic script, so `document.currentScript` is how the client
+    // can discover the origin it was served from.
+    currentScript: { src: 'http://127.0.0.1:3080/plugins/??dsh-plugin-vllm-ascend-profiler/client.js' },
   };
   // In a browser `globalThis === window`, so the sandbox must be one object that
   // plays both roles — otherwise `globalThis.location` silently differs from
   // `window.location` and the test would diverge from the real shell.
   const sandbox = {
     document: documentStub,
+    // A vm context gets no globals for free; the bundle parses origins with these.
+    URL,
+    URLSearchParams,
     console: { warn: (...args) => warnings.push(args.join(' ')), error: (...args) => warnings.push(args.join(' ')) },
-    location: {
+    location: location ?? {
       origin: 'http://127.0.0.1:3080',
       pathname: '/vllm-ascend-profiler/',
       // The shell URL, as `location.href` is what the fallback passes back to the
@@ -59,7 +65,7 @@ function loadBundle({ slots, services, openResult } = {}) {
       return openResult === undefined ? { closed: false } : openResult;
     },
     __ModuleLoader__: loader,
-    __VLLM_ASCEND_PROFILER__: { routePrefix: '/vllm-ascend-profiler' },
+    __VLLM_ASCEND_PROFILER__: injected ?? { routePrefix: '/vllm-ascend-profiler' },
   };
   const seeds = {
     react: {
@@ -189,6 +195,31 @@ test('a denied popup falls back to navigating the shell window', () => {
     [...windowStub.location.assigned],
     [`http://127.0.0.1:3080/vllm-ascend-profiler/?back=${encodeURIComponent('http://127.0.0.1:3080/?token=abc')}`],
   );
+});
+
+/**
+ * The DSH webserver binds 127.0.0.1 only, while Windows resolves `localhost` to
+ * `::1` first — that combination is what the desktop app reported as
+ * `ERR_CONNECTION_REFUSED (-102)` in its in-app browser tab.
+ */
+test('loopback origins are normalised to 127.0.0.1', () => {
+  const localhost = loadBundle({ location: { origin: 'http://localhost:3080', pathname: '/', href: 'http://localhost:3080/', search: '' } });
+  assert.equal(localhost.factoryExports.analyzerUrl(), 'http://127.0.0.1:3080/vllm-ascend-profiler/');
+
+  const v6 = loadBundle({ location: { origin: 'http://[::1]:3080', pathname: '/', href: 'http://[::1]:3080/', search: '' } });
+  assert.equal(v6.factoryExports.analyzerUrl(), 'http://127.0.0.1:3080/vllm-ascend-profiler/');
+
+  // A non-http origin is refused rather than turned into an unreachable URL.
+  assert.equal(loadBundle().factoryExports.normalizeOrigin('dsh-app://app'), undefined);
+  assert.equal(loadBundle().factoryExports.normalizeOrigin('not a url'), undefined);
+});
+
+test('a non-http shell origin falls back to the host-injected origin', () => {
+  const { factoryExports } = loadBundle({
+    location: { origin: 'dsh-app://app', pathname: '/', href: 'dsh-app://app/', search: '' },
+    injected: { routePrefix: '/vllm-ascend-profiler', origin: 'http://localhost:19387' },
+  });
+  assert.equal(factoryExports.analyzerUrl(), 'http://127.0.0.1:19387/vllm-ascend-profiler/');
 });
 
 test('a shell without the browser tab still opens through window.open', () => {
