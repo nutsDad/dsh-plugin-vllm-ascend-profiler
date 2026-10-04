@@ -22,10 +22,29 @@ node .tools/verify-e2e.mjs --scenario prefill-compute-bound --advice compute.qua
 | ④ 任务包落盘 | PASS | `.dsh-vap-tasks/<ts>-compute.quantize.md`（2850 B）+ 同名 `.json` |
 | ⑤ 算子工程脚手架 | PASS | `ascend-kernel/csrc/ops/rms_norm/{op_host,op_kernel,design.md}`（模板来自 `ascendc` skill 的 `templates/ascend-kernel`） |
 | ⑥ 设计文档门禁 | PASS | `design.md` 9/9 项齐全（签名、实现路径、伪代码、两级 tiling、UB 分配表、bufferCoefficient、升精度路径、workspace、验收标准），9135 字符 |
-| ⑦ 编译 / 精度 / 性能 | **BLOCKED** | `ASCEND_HOME_PATH` 与 `CONDA_DEFAULT_ENV` 均为空，本机无 CANN / torch_npu / npu-smi → Phase 5/7/8 必须在昇腾机器执行 |
+| ⑦ 测试用例（Phase 3） | PASS | `test/rms_norm-test-cases.md`：8 个常规形状 + 8 个泛化形状 + 10 个边界值 × 3 dtypes = **78 用例**（≥30），含 `NPU_CALL` / `CPU_REF` / `NPU_BASELINE`（供 Phase 8 双路对比） |
+| ⑧ 代码与注册点（Phase 4） | PASS | `op_host/rms_norm.cpp`（110 行）+ `op_kernel/rms_norm.cpp`（211 行）+ 三处注册点，12/12 静态检查通过（见下表） |
+| ⑨ 编译 / 精度 / 性能 | **BLOCKED** | `ASCEND_HOME_PATH` 与 `CONDA_DEFAULT_ENV` 均为空，本机无 CANN / torch_npu / npu-smi → Phase 5/7/8 必须在昇腾机器执行 |
 
-第 ⑦ 行是**环境门禁**，不是链路故障：`ascendc` skill 的 Phase 0 要求先确认 CANN 与 conda
+第 ⑨ 行是**环境门禁**，不是链路故障：`ascendc` skill 的 Phase 0 要求先确认 CANN 与 conda
 环境，本机两样都没有，因此按 skill 的规定停在编写阶段（Phase 1–4 是作者工作，不需要硬件）。
+
+### Phase 4 静态检查明细（12 项）
+
+| 检查 | 结果 |
+| --- | --- |
+| kernel `BUFFER_NUM = 2`（双缓冲） | ✔ |
+| GM↔UB 只用 `DataCopyPad`，无 `DataCopy` | ✔ |
+| fp16/bf16 先 `Cast` 升 fp32 再算 | ✔ |
+| 归约前备份源张量（`Adds(..., 0.0f, ...)`） | ✔ |
+| `ReduceSum` 的 dst / src / tmp 是三块不同 buffer | ✔ |
+| kernel 内不出现 `std::sqrt/exp/abs/min/max` | ✔ |
+| op_host 用平台 API 取核数与 UB（不硬编码） | ✔ |
+| op_host 有输入校验（`TORCH_CHECK`） | ✔ |
+| `EXEC_KERNEL_CMD` 参数全部为具名左值 | ✔ |
+| 注册点 1：`csrc/ops.h` 声明 | ✔ |
+| 注册点 2：`csrc/register.cpp` 的 `m.def` + `m.impl` | ✔ |
+| 注册点 3：`csrc/CMakeLists.txt` 的 host 与 kernel 源文件 | ✔ |
 
 ## 为什么选 `RmsNorm` 而不是占比最高的 `MatMulV2`
 
@@ -45,8 +64,13 @@ node .tools/verify-e2e.mjs --scenario prefill-compute-bound --advice compute.qua
 | 算子优化任务（人读） | `D:\00_deepseekharness\.dsh-vap-tasks\<ts>-compute.quantize.md` |
 | 算子优化任务（结构化） | 同名 `.json`（含算子清单、skill 链、验收表、指标快照） |
 | 设计文档 | `D:\00_deepseekharness\ascend-kernel\csrc\ops\rms_norm\design.md` |
+| 测试用例（Phase 3） | `…\csrc\ops\rms_norm\test\rms_norm-test-cases.md` |
+| 算子实现（Phase 4） | `…\csrc\ops\rms_norm\op_host\rms_norm.cpp`、`…\op_kernel\rms_norm.cpp` |
 | 工程脚手架 | `D:\00_deepseekharness\ascend-kernel\`（`build.sh`、`csrc/`、`python/`、`tests/`） |
 | 页面截图 | `docs/screenshots/16-execute-handoff.png`（第 5 步 ④ 优化行动 · 执行后的任务面板） |
+
+> 算子工程目前放在工作区（不在本插件仓库内）：它是"从 profiling 交接出来"的下游产物，
+> 与插件版本节奏无关。要单独建仓（例如 `ascend-kernel` 仓库）随时可以推进。
 
 ## 验收标准怎么回到插件
 
@@ -66,19 +90,23 @@ node .tools/verify-e2e.mjs --scenario prefill-compute-bound --advice compute.qua
 # 0) 环境
 source ${CANN_PATH}/*/set_env.sh && conda activate <env>
 
-# 1) 补齐算子实现（Phase 3/4）：测试用例 + op_host/op_kernel + 三处注册点
-#    依据 design.md；模板见 ascendc skill 的 templates/code-gen/
-
-# 2) 编译安装并跑功能/精度测试（Phase 5）
+# 1) 编译安装并跑功能/精度测试（Phase 5）
 cd ascend-kernel && chmod +x build.sh && bash build.sh
 pip install output/ascend_kernel*.whl --force-reinstall --no-deps
 python tests/test_rms_norm.py && pytest -v
 
-# 3) 单算子基准（Phase 8，双路对比）
+# 2) 精度评估（Phase 7）：用 test/rms_norm-test-cases.md 的 78 个用例
+python run_rms_norm_precision_report.py
+
+# 3) 单算子基准（Phase 8，双路对比 NPU_CALL vs NPU_BASELINE）
 python -m npu_op_benchmark --op rms_norm --shapes "2048x4096" --dtypes fp16,bf16 --warmup 5 --active 5
 
 # 4) 端到端复测：重新采集 → 第 6 步对比 → 看 computeUs 是否越过 15% 阈值
 ```
+
+Phase 3/4 已经在本机完成（测试用例 + `op_host` / `op_kernel` + 三处注册点，静态检查 12/12），
+所以到昇腾机器上第一步就是**编译**，不需要再补代码；若编译报错，按 `ascendc` skill 的
+`references/05-compile-debug.md` 的决策树做最多 3 轮修复。
 
 ## 已知边界
 
