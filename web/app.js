@@ -60,6 +60,7 @@
     bindCompare();
     bindControls();
     bindStepper();
+    bindBackLink();
     state.gantt = new VAP.GanttView({
       canvas: el.ganttCanvas,
       tooltip: el.ganttTooltip,
@@ -88,8 +89,37 @@
     });
   }
 
+  /**
+   * Show a "back to the session" link when the desktop shell had to navigate this
+   * window to reach the analyzer.
+   *
+   * The Electron shell denies `window.open`, so the sidebar entry falls back to
+   * same-window navigation and passes the shell URL as `?back=`. Without this the
+   * user would be stranded in the analyzer page with no way back to the chat.
+   * The parameter is only honoured for a same-origin http(s) URL: a link that
+   * navigates anywhere else would be a redirect gadget.
+   */
+  function bindBackLink() {
+    if (el.backLink === undefined) return;
+    let target;
+    try {
+      const raw = new URLSearchParams(globalThis.location?.search ?? '').get('back');
+      if (raw === null || raw === '') return;
+      const parsed = new URL(raw, globalThis.location.href);
+      const sameOrigin = parsed.origin === globalThis.location.origin;
+      const webUrl = parsed.protocol === 'http:' || parsed.protocol === 'https:';
+      if (!sameOrigin || !webUrl) return;
+      target = parsed.href;
+    } catch {
+      return;
+    }
+    el.backLink.href = target;
+    el.backLink.hidden = false;
+  }
+
   function cacheElements() {
     const ids = [
+      'back-link',
       'motion-toggle', 'btn-docs', 'btn-about', 'btn-formats', 'stepper',
       'intake', 'dropzone', 'file-input', 'path-input', 'btn-path', 'path-hint',
       'progress-wrap', 'progress-detail', 'progress-percent', 'progress-bar', 'progress-steps', 'progress-log', 'progress-log-toggle',

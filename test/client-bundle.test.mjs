@@ -17,7 +17,7 @@ const bundlePath = join(here, '..', 'lib', 'client.js');
  * client bundles are loaded as classic scripts, so a syntax error there would
  * otherwise surface as a blank GUI.
  */
-function loadBundle({ slots } = {}) {
+function loadBundle({ slots, services, openResult } = {}) {
   const registrations = [];
   const warnings = [];
   const styles = [];
@@ -41,9 +41,22 @@ function loadBundle({ slots } = {}) {
   const sandbox = {
     document: documentStub,
     console: { warn: (...args) => warnings.push(args.join(' ')), error: (...args) => warnings.push(args.join(' ')) },
-    location: { origin: 'http://127.0.0.1:3080', pathname: '/vllm-ascend-profiler/' },
+    location: {
+      origin: 'http://127.0.0.1:3080',
+      pathname: '/vllm-ascend-profiler/',
+      // The shell URL, as `location.href` is what the fallback passes back to the
+      // analyzer page so it can offer a way out.
+      href: 'http://127.0.0.1:3080/?token=abc',
+      assigned: [],
+      assign(url) {
+        this.assigned.push(url);
+      },
+    },
     open(url, target) {
       sandbox.opened = { url, target };
+      // `setWindowOpenHandler({action:'deny'})` makes window.open return null,
+      // which is how the Electron shell behaves for this http URL.
+      return openResult === undefined ? { closed: false } : openResult;
     },
     __ModuleLoader__: loader,
     __VLLM_ASCEND_PROFILER__: { routePrefix: '/vllm-ascend-profiler' },
@@ -80,8 +93,8 @@ function loadBundle({ slots } = {}) {
         return { options, component };
       },
     },
-    get() {
-      return undefined;
+    get(name) {
+      return services?.[name];
     },
   };
   return { registration, factoryExports, context, registered, warnings, styles, windowStub: sandbox };
@@ -141,6 +154,50 @@ test('the entry URL follows the injected route prefix', () => {
   const url = factoryExports.analyzerUrl();
   assert.equal(url, 'http://127.0.0.1:3080/vllm-ascend-profiler/');
   void registered;
+});
+
+/**
+ * The desktop shell denies every `window.open` (`setWindowOpenHandler` returns
+ * `deny` for this http URL), which is why clicking the entry appeared to do
+ * nothing. Opening must fall back until something works.
+ */
+test('the entry opens in the shell browser tab when the shell offers one', () => {
+  const calls = [];
+  const { factoryExports, context, registered, windowStub } = loadBundle({
+    services: {
+      sidebarRightTabs: { get: (id) => (id === 'browser' ? { id } : undefined) },
+      sidebarRight: { openTab: (id, options) => calls.push({ id, options }) },
+    },
+  });
+  factoryExports.apply(context);
+  registered[0].value.component({ wide: true }).args[2].args[1].onClick();
+
+  // Compare by value: the callback receives an object built inside the vm realm,
+  // which strict deep-equality treats as a different prototype chain.
+  assert.equal(JSON.stringify(calls), JSON.stringify([{ id: 'browser', options: { params: { url: 'http://127.0.0.1:3080/vllm-ascend-profiler/' } } }]));
+  assert.equal(windowStub.opened, undefined, 'the in-app tab wins; no popup is attempted');
+});
+
+test('a denied popup falls back to navigating the shell window', () => {
+  const { factoryExports, context, registered, windowStub } = loadBundle({ openResult: null });
+  factoryExports.apply(context);
+  registered[0].value.component({ wide: true }).args[2].args[1].onClick();
+
+  assert.equal(windowStub.opened.url, 'http://127.0.0.1:3080/vllm-ascend-profiler/', 'the popup is still attempted first');
+  // The fallback carries the shell URL so the analyzer page can offer a way back.
+  assert.deepEqual(
+    [...windowStub.location.assigned],
+    [`http://127.0.0.1:3080/vllm-ascend-profiler/?back=${encodeURIComponent('http://127.0.0.1:3080/?token=abc')}`],
+  );
+});
+
+test('a shell without the browser tab still opens through window.open', () => {
+  const { factoryExports, context, registered, windowStub } = loadBundle({ services: { sidebarRightTabs: { get: () => undefined } } });
+  factoryExports.apply(context);
+  registered[0].value.component({ wide: true }).args[2].args[1].onClick();
+
+  assert.equal(windowStub.opened.target, '_blank');
+  assert.deepEqual(windowStub.location.assigned, [], 'navigation is only the last resort');
 });
 
 test('a missing slot service degrades to a warning instead of throwing', () => {

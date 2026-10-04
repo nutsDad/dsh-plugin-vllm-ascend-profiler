@@ -363,7 +363,7 @@ function fakeContext() {
 }
 
 /** Load the page scripts into a browser-like sandbox, in document order. */
-function loadPage({ withHtmlIds = false, fetchImpl, noMotion = false } = {}) {
+function loadPage({ withHtmlIds = false, fetchImpl, noMotion = false, location } = {}) {
   const documentStub = {
     body: new FakeNode('body'),
     head: new FakeNode('head'),
@@ -434,7 +434,11 @@ function loadPage({ withHtmlIds = false, fetchImpl, noMotion = false } = {}) {
       unobserve() {}
       disconnect() {}
     },
-    location: { origin: 'http://127.0.0.1:3080', pathname: '/vllm-ascend-profiler/', href: '' },
+    location: location ?? { origin: 'http://127.0.0.1:3080', pathname: '/vllm-ascend-profiler/', href: '', search: '' },
+    // A vm context gets no globals for free: the page uses these two for URL work
+    // (the `?back=` link), and without them `new URL` throws inside the page.
+    URL,
+    URLSearchParams,
     open() {},
     addEventListener() {},
     getComputedStyle: () => ({ getPropertyValue: () => '' }),
@@ -1211,6 +1215,32 @@ test('an overview action opens step ④ on the very card it names', async () => 
   assert.equal(active.length, 1, 'exactly one step stays selected');
   assert.equal(active[0].dataset.node, 'actions', 'the link selects the action step');
   assert.ok(chain.querySelectorAll('.action-row').length > 0, 'and the action rows are on screen');
+});
+
+test('a shell navigation offers a way back to the session', async () => {
+  const shellUrl = 'http://127.0.0.1:3080/?token=abc';
+  const sandbox = loadPage({
+    withHtmlIds: true,
+    location: { origin: 'http://127.0.0.1:3080', pathname: '/vllm-ascend-profiler/', search: `?back=${encodeURIComponent(shellUrl)}` },
+    fetchImpl: async () => ({ ok: true, json: async () => ({}) }),
+  });
+  const handler = sandbox.document._listeners.find((entry) => entry.type === 'DOMContentLoaded');
+  await handler.handler();
+  const link = registry.get('back-link');
+  assert.equal(link.hidden, false, 'the back link appears when the shell passed ?back');
+  assert.equal(link.href, shellUrl);
+
+  // A cross-origin or non-http target is refused (redirect gadget).
+  for (const bad of ['https://example.com/', 'file:///C:/secret.txt', 'javascript:alert(1)']) {
+    const page = loadPage({
+      withHtmlIds: true,
+      location: { origin: 'http://127.0.0.1:3080', pathname: '/vllm-ascend-profiler/', search: `?back=${encodeURIComponent(bad)}` },
+      fetchImpl: async () => ({ ok: true, json: async () => ({}) }),
+    });
+    const start = page.document._listeners.find((entry) => entry.type === 'DOMContentLoaded');
+    await start.handler();
+    assert.equal(registry.get('back-link').hidden, true, `${bad} must not become a back link`);
+  }
 });
 
 test('init survives an unreachable API without breaking the page', async () => {
