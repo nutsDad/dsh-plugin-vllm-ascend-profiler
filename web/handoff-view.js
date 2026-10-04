@@ -46,9 +46,11 @@
     // 0) generated operator project (执行 produces this in the same round trip)
     const project = task.project;
     if (project !== undefined && project.ok === true) {
+      const fileCount = (project.files ?? []).length;
       root.append(h('div.handoff-section.project', {}, [
         h('div.handoff-section-title', {}, `已生成算子工程 · ${project.title}`),
         h('p.handoff-optimisation', {}, project.summary?.optimization ?? ''),
+        h('p.hint', {}, `导出按钮在建议行「执行」右侧（导出后拷到昇腾机器上 bash build.sh 编译；本工程 ${String(fileCount)} 个文件）`),
         h('dl.handoff-paths', {}, [
           h('dt', {}, '工程目录'), h('dd.mono', {}, project.dir ?? '—'),
           h('dt', {}, '生成类别'), h('dd', {}, `${project.kind}（${project.reason ?? ''}）`),

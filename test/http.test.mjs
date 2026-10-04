@@ -450,6 +450,51 @@ test('执行 generates the operator project as well as the task', async () => {
   }
 });
 
+test('a generated operator project can be exported as a ZIP', async () => {
+  const route = mountPlugin();
+  const create = await request(route, {
+    method: 'POST',
+    path: '/vllm-ascend-profiler/api/jobs',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ path: join(here, 'fixtures', 'prefill-compute-bound'), label: 'prefill-compute-bound' }),
+  });
+  assert.equal(create.status, 202);
+  const job = await waitForJob(route, create.json().id);
+  assert.equal(job.state, 'done', JSON.stringify(job.errors));
+
+  const workspace = mkdtempSync(join(tmpdir(), 'vap-export-http-'));
+  const previous = process.cwd();
+  process.chdir(workspace);
+  try {
+    const executed = await request(route, {
+      method: 'POST',
+      path: `/vllm-ascend-profiler/api/datasets/${job.datasetId}/advice/compute.quantize/execute`,
+    });
+    assert.equal(executed.status, 200);
+    const op = executed.json().task.project.op;
+
+    const archive = await request(route, { path: `/vllm-ascend-profiler/api/operator-work/${op}/archive` });
+    assert.equal(archive.status, 200, archive.body.slice(0, 200));
+    assert.equal(archive.headers['content-type'], 'application/zip');
+    assert.match(archive.headers['content-disposition'], new RegExp(`attachment; filename="${op}\\.zip"`));
+    const buffer = Buffer.concat(archive.chunks ?? []);
+    assert.equal(buffer.readUInt32LE(0), 0x04034b50, 'a real ZIP header');
+    const text = buffer.toString('latin1');
+    for (const expected of [`csrc/ops/${op}/op_kernel/${op}.cpp`, `csrc/ops/${op}/design.md`, `csrc/ops/${op}/register-patch.md`]) {
+      assert.ok(text.includes(expected), `archive must contain ${expected}`);
+    }
+
+    // Unknown or hostile names are refused, not turned into filesystem reads.
+    const missing = await request(route, { path: '/vllm-ascend-profiler/api/operator-work/nope/archive' });
+    assert.equal(missing.status, 404);
+    const hostile = await request(route, { path: '/vllm-ascend-profiler/api/operator-work/..%2F..%2Fetc/archive' });
+    assert.ok([400, 404].includes(hostile.status), `hostile name -> ${String(hostile.status)}`);
+  } finally {
+    process.chdir(previous);
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
 test('the skills endpoint inventories the Ascend bundles it can see', async () => {
   const route = mountPlugin();
   const res = await request(route, { path: '/vllm-ascend-profiler/api/skills' });

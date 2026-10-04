@@ -126,6 +126,8 @@
        * skills; the host writes the package into the session workspace.
        */
       adviceHandoff: (datasetId, adviceId) => postJson(`/datasets/${datasetId}/advice/${encodeURIComponent(adviceId)}/handoff`, {}),
+      /** Download URL for a generated operator project (ZIP export). */
+      operatorArchiveUrl: (op) => `${PREFIX}/api/operator-work/${encodeURIComponent(op)}/archive`,
       /**
        * 执行: build the task **and** generate the optimised operator sources for it
        * in one call; the host writes both into the session workspace.

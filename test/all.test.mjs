@@ -15,6 +15,7 @@ import './compare.test.mjs';
 import './handoff.test.mjs';
 import './operator-gen.test.mjs';
 import './operator-sim.test.mjs';
+import './zip.test.mjs';
 import './http.test.mjs';
 import './web-dom.test.mjs';
 import './client-bundle.test.mjs';

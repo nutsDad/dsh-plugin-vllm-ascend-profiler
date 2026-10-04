@@ -1292,6 +1292,14 @@ test('执行 hands an advice item to the operator skills', async () => {
   assert.equal(buttons.length, 3, 'every advice row offers 执行');
   assert.ok(chain.textContent.includes('算子优化 skills 3/4'), 'the availability chip states how many skills are visible');
 
+  // Before running: 导出 sits right of 执行 but is disabled.
+  const disabledExports = chain.querySelectorAll('button.export-disabled');
+  assert.equal(disabledExports.length, 3, 'each row has a disabled export button before 执行');
+  for (const node of disabledExports) {
+    assert.notEqual(node.getAttribute('disabled'), null, 'the pre-execute export control is disabled');
+    assert.match(String(node.getAttribute('title')), /先点「执行」/);
+  }
+
   buttons[0].click();
   await nextFrame();
   await nextFrame();
@@ -1307,6 +1315,15 @@ test('执行 hands an advice item to the operator skills', async () => {
   assert.match(project[0].textContent, /D:\/ws\/operator-work\/rms_norm_fused/);
   assert.match(project[0].textContent, /op_kernel\/rms_norm_fused\.cpp/);
   assert.match(project[0].textContent, /需要 CANN \+ 昇腾 NPU/);
+  // 导出按钮在「执行」右侧；执行完成后才变成可下载的 ZIP 链接。
+  const exportLink = chain.querySelectorAll('a.export-link');
+  assert.equal(exportLink.length, 1, 'the row offers an export link once executed');
+  assert.equal(exportLink[0].getAttribute('download'), 'rms_norm_fused.zip');
+  assert.match(String(exportLink[0].getAttribute('href')), /\/api\/operator-work\/rms_norm_fused\/archive$/);
+  assert.match(exportLink[0].textContent, /导出算子/);
+  const actions = chain.querySelectorAll('.action-actions')[0];
+  const labels = actions.children.map((node) => node.textContent);
+  assert.ok(labels.indexOf('执行') < labels.indexOf('导出算子'), `导出 must sit right of 执行 (${labels.join(' | ')})`);
   assert.match(text, /目标算子/);
   assert.match(text, new RegExp(handoff.operators[0].name), 'the task names the operator the host picked');
   assert.match(text, /执行的 skills（按顺序）/);

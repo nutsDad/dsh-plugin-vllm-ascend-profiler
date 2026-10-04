@@ -287,10 +287,11 @@
           typeof options.onExecute === 'function'
             ? h('button.small.primary.execute', {
               type: 'button',
-              title: '把这条建议交给 Ascend 算子优化 skills 执行',
+              title: '把这条建议交给 Ascend 算子优化 skills 执行，并生成算子工程',
               onclick: () => options.onExecute(item),
             }, '执行')
             : undefined,
+          exportControl(item, options),
         ]),
       ]);
       const handoff = options.handoffs?.[item.id];
@@ -382,6 +383,39 @@
   void formatUs;
   void formatCount;
 
+  /**
+   * Export control, immediately right of 执行.
+   *
+   * It stays disabled until that advice item has actually been executed and its
+   * operator project exists — an enabled download for a project that was never
+   * generated would only produce a 404. Once the project is there it becomes a
+   * download link for the whole project as one ZIP.
+   *
+   * @param {object} item - advice item.
+   * @param {object} options - render options carrying `handoffs`.
+   * @returns {HTMLElement} disabled button (not run yet) or download link (ready).
+   */
+  function exportControl(item, options) {
+    const handoff = options.handoffs?.[item.id];
+    const project = handoff?.task?.project;
+    if (project === undefined || project.ok !== true) {
+      return h('button.small.ghost.export-disabled', {
+        type: 'button',
+        disabled: '',
+        title: handoff?.pending === true ? '正在生成算子工程…' : '先点「执行」生成算子工程，然后才能导出',
+      }, '导出算子');
+    }
+    const url = typeof VAP.api?.operatorArchiveUrl === 'function' ? VAP.api.operatorArchiveUrl(project.op) : undefined;
+    if (url === undefined) {
+      return h('button.small.ghost.export-disabled', { type: 'button', disabled: '', title: '导出地址不可用' }, '导出算子');
+    }
+    return h('a.small.ghost.export-link', {
+      href: url,
+      download: `${project.op}.zip`,
+      title: `下载 ${project.op}.zip（${String((project.files ?? []).length)} 个文件：kernel / host / 设计 / 用例 / 接入补丁）`,
+    }, '导出算子');
+  }
+
   global.VAP = global.VAP ?? {};
-  global.VAP.advice = { renderAdvice, topActions, ADVICE_FILTER };
+  global.VAP.advice = { renderAdvice, topActions, ADVICE_FILTER, exportControl };
 })(window);
