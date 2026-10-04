@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Readable, Writable } from 'node:stream';
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 import { apply, DEFAULT_CONFIG } from '../lib/index.js';
 
@@ -401,4 +402,73 @@ test('status page reports a 404 for an unknown asset', async () => {
   const res = await request(route, { path: '/vllm-ascend-profiler/missing.js' });
   assert.equal(res.status, 404);
   assert.match(res.body, /未找到该资源/);
+});
+
+test('the skills endpoint inventories the Ascend bundles it can see', async () => {
+  const route = mountPlugin();
+  const res = await request(route, { path: '/vllm-ascend-profiler/api/skills' });
+  assert.equal(res.status, 200, res.body.slice(0, 200));
+  const payload = res.json();
+  assert.equal(payload.ok, true);
+  assert.match(payload.repo, /awesome-ascend-skills/);
+  assert.deepEqual(payload.bundles.map((bundle) => bundle.name), ['ascend-base', 'ascend-profiling', 'ascend-ops']);
+  for (const bundle of payload.bundles) {
+    assert.ok(bundle.skills.length > 0, `${bundle.name} must list skills`);
+    for (const skill of bundle.skills) assert.equal(typeof skill.installed, 'boolean');
+  }
+  const ops = payload.bundles.find((bundle) => bundle.name === 'ascend-ops');
+  assert.ok(ops.skills.some((skill) => skill.name === 'ascendc'));
+  const base = payload.bundles.find((bundle) => bundle.name === 'ascend-base');
+  assert.ok(base.skills.some((skill) => skill.name === 'torch_npu'));
+  // Roots mirror DSH's own discovery order, and are reported either way.
+  assert.ok(payload.roots.some((root) => root.source === 'user-dsh'));
+  assert.equal(payload.installedCount + payload.missingCount, payload.bundles.reduce((sum, bundle) => sum + bundle.skills.length, 0));
+});
+
+test('an advice item can be handed off to the operator skills', async () => {
+  const route = mountPlugin();
+  const create = await request(route, {
+    method: 'POST',
+    path: '/vllm-ascend-profiler/api/jobs',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ path: join(here, 'fixtures', 'prefill-compute-bound'), label: 'prefill-compute-bound' }),
+  });
+  assert.equal(create.status, 202);
+  const job = await waitForJob(route, create.json().id);
+  assert.equal(job.state, 'done', JSON.stringify(job.errors));
+
+  // The task package is written relative to the session workspace (`process.cwd()`),
+  // so run this part from a scratch directory and check the files it leaves.
+  const workspace = mkdtempSync(join(tmpdir(), 'vap-handoff-http-'));
+  const previous = process.cwd();
+  process.chdir(workspace);
+  try {
+    const res = await request(route, {
+      method: 'POST',
+      path: `/vllm-ascend-profiler/api/datasets/${job.datasetId}/advice/compute.quantize/handoff`,
+    });
+    assert.equal(res.status, 200, res.body.slice(0, 300));
+    const task = res.json().task;
+    assert.equal(task.adviceId, 'compute.quantize');
+    assert.equal(task.focus, 'kernel');
+    assert.equal(task.operators[0].name, 'MatMulV2');
+    assert.equal(task.skills.chain[0].name, 'ascendc');
+    assert.ok(task.acceptance.some((row) => row.key === 'computeUs'));
+    assert.ok(task.prompt.includes('## 4. 验收标准'));
+    assert.equal(task.artifacts.dir, join(workspace, '.dsh-vap-tasks'));
+    assert.ok(existsSync(task.artifacts.markdownPath), 'markdown must exist');
+    assert.ok(existsSync(task.artifacts.jsonPath), 'json must exist');
+    assert.match(readFileSync(task.artifacts.markdownPath, 'utf8'), /算子优化任务/);
+
+    const unknown = await request(route, {
+      method: 'POST',
+      path: `/vllm-ascend-profiler/api/datasets/${job.datasetId}/advice/nope.nope/handoff`,
+    });
+    assert.equal(unknown.status, 404);
+    assert.match(unknown.json().error, /未知的优化项/);
+    assert.ok(unknown.json().knownIds.includes('compute.quantize'));
+  } finally {
+    process.chdir(previous);
+    rmSync(workspace, { recursive: true, force: true });
+  }
 });

@@ -551,3 +551,38 @@ details.compact ul { margin: 2px 0 0 16px; padding: 0; }
 .modal-body pre { background: var(--panel-2); border: 1px solid var(--line); border-radius: 9px; padding: 9px; overflow: auto; font-size: 11.5px; }
 
 .page-foot { display: flex; justify-content: space-between; gap: 12px; padding: 12px 20px 28px; color: var(--ink-3); font-size: 11.5px; }
+
+/* ── 5 · operator-optimization handoff (执行) ───────────────────────────── */
+button.execute { white-space: nowrap; }
+.handoff-panel {
+  margin: 2px 0 8px; padding: 10px 11px; border: 1px solid var(--line);
+  border-left: 3px solid var(--accent); border-radius: 9px; background: var(--panel-2);
+  display: flex; flex-direction: column; gap: 10px; animation: fade-in .18s var(--ease) both;
+}
+.handoff-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.handoff-title { font-weight: 600; font-size: 12.5px; }
+.handoff-section { display: flex; flex-direction: column; gap: 6px; }
+.handoff-section.warn { border-top: 1px dashed var(--line); padding-top: 8px; }
+.handoff-section-title { font-size: 11.5px; color: var(--ink-3); letter-spacing: .02em; }
+.handoff-table { width: 100%; border-collapse: collapse; font-size: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.handoff-table th, .handoff-table td { padding: 4px 8px; text-align: left; border-bottom: 1px solid var(--line); }
+.handoff-table th { font-weight: 600; color: var(--ink-2); background: var(--panel-3); font-size: 11.5px; }
+.handoff-table tr:last-child td { border-bottom: 0; }
+.handoff-skills { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.handoff-skills li { display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap; }
+.skill-name { font-weight: 600; }
+.handoff-skill-purpose { color: var(--ink-2); }
+.skill-state { font-size: 11px; padding: 1px 6px; border-radius: 999px; }
+.skill-state.ok { background: color-mix(in srgb, var(--ok, #1a7f37) 16%, transparent); color: var(--ok, #1a7f37); }
+.skill-state.missing { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
+.handoff-paths { display: grid; grid-template-columns: max-content 1fr; gap: 2px 10px; margin: 0; font-size: 12px; }
+.handoff-paths dt { color: var(--ink-3); }
+.handoff-paths dd { margin: 0; overflow-wrap: anywhere; }
+.handoff-prompt-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.handoff-prompt { width: 100%; font-family: var(--mono); font-size: 11.5px; line-height: 1.5; color: var(--ink-2); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px; resize: vertical; }
+.error-inline { margin: 4px 0 8px; font-size: 12px; color: var(--danger, #b42318); }
+@media (max-width: 900px) {
+  .handoff-paths { grid-template-columns: minmax(0, 1fr); }
+  .handoff-paths dt { margin-top: 4px; }
+}
+

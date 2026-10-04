@@ -1,6 +1,6 @@
 # vLLM-Ascend Profiler Analyzer
 
-一个 DeepSeek Harness 插件（DSH plugin）：上传 vLLM-Ascend / 昇腾 NPU 的 profiling 产物，自动完成**文件校验 → 流式解析 → 独立可视化页面（三大模块）→ 结构化性能优化建议 → Markdown/PDF 报告导出**。
+一个 DeepSeek Harness 插件（DSH plugin）：上传 vLLM-Ascend / 昇腾 NPU 的 profiling 产物，自动完成**文件校验 → 流式解析 → 独立可视化页面（六步流程）→ 结构化性能优化建议 → 优化前后对比 → Markdown/PDF 报告导出**，并可以把某条优化建议**一键交给昇腾算子 skills**（AscendC 算子开发、单算子基准、重新采集）继续往下做。
 
 分析结论不是"看一眼就下的判断"：每一句结论都能追溯到具体指标、门限、产物字段与推算公式，并且区分 **Prefill** 与 **Decode** 两类负载。插件本身**零运行时依赖**（只用 Node 内置模块与浏览器原生 API，不打包任何第三方前端库）。
 
@@ -160,7 +160,37 @@ dsh --profile demo --from-default-profile web --port 3099 --no-open
 
 对比分析在**宿主侧**完成（`lib/analysis/compare.js`，接口 `GET /api/datasets/<before>/compare?with=<after>`），页面只负责摆放，因此同一套判定标准也适用于报告与自动化调用。
 
-### 3.5 动效与可访问性
+### 3.5 第 5 步「执行」：把一条建议交给昇腾算子 skills
+
+第 5 步的 ④ 优化行动里，每条建议右侧都有 **「执行」** 按钮。点下去不是"打开一个文档"，而是把这条建议
+变成一份**可直接开工的算子优化任务**，交给 [awesome-ascend-skills](https://github.com/ascend-ai-coding/awesome-ascend-skills)
+的三个官方安装包执行：
+
+| 安装包 | 在本流程里的角色 |
+| --- | --- |
+| `ascend-base` | 环境与设备检查、torch_npu 基础能力（`npu-smi`、`ascend-dmi`、`torch_npu` 等 7 个） |
+| `ascend-profiling` | 证据复核与重新采集（`profiling-analysis`、`pytorch-profiling-collection` 等 5 个） |
+| `ascend-ops` | 算子实现与接入（`ascendc`、`ascend-opplugin`、`triton-ascend-migration`、`npu-op-benchmark`） |
+
+按下「执行」后宿主侧会（`lib/handoff.js`）：
+
+1. **挑出目标算子**——按建议的焦点从本次采集里选：`kernel` 取设备计算算子（按累计耗时）、
+   `comm` 取通信算子、`dispatch` / `graph` 取 Host 下发与同步算子（按调用次数）、`copy` 取拷贝算子；
+2. **给出 skill 链条**——哪几个 skill、什么顺序、主/支撑、各自负责什么；并**探测 DSH 的 skills 根**
+   （`<project>/.dsh/skills` → `<project>/.agents/skills` → `$DSH_HOME/skills` → `<AGENTS_HOME>/skills`）
+   报告"已安装 / 未安装"，缺哪个就给出安装命令，而不是等运行到一半才失败；
+3. **写死验收标准**——用与第 6 步**同一套指标词汇**（`ADVICE_TARGETS`）与同一条阈值规则（预期收益的
+   一半，下限 1%），列出目标指标的当前值、预期收益与判定阈值；
+4. **落盘成任务包**——`<工作区>/.dsh-vap-tasks/<时间戳>-<建议 id>.md`（人读）与 `.json`（结构化），
+   页面里可直接**复制指令**粘贴给会话中的 agent，也可以按任务说明手动执行。
+
+因此闭环是：**profiling 分析 → 点「执行」→ skills 做算子改造 → 同一负载复采 → 第 6 步对比给出
+「已达成 / 部分达成 / 未达成」**。接口：`POST /api/datasets/<id>/advice/<adviceId>/handoff`（未知建议返回 404
+并附上可用 id 列表）、`GET /api/skills`（三个安装包与每个 skill 的可见性）。
+
+端到端实测链路与产物（含必须到昇腾机器执行的部分）见 [`docs/operator-handoff.md`](docs/operator-handoff.md)。
+
+### 3.6 动效与可访问性
 
 动效都用来说清"数据是怎么来的"，而不是装饰：载入时 KPI 数字滚动、进度条按阶段推进、泳道图从左到右扫出算子条、treemap 方块按名次依次淡入、收益条从 0 生长、进度条与评分条从 0 增长、面板切换淡入。
 
@@ -169,25 +199,25 @@ dsh --profile demo --from-default-profile web --port 3099 --no-open
 * 所有交互都有非动画的等价反馈（文字状态、`aria-pressed`、筛选标签）；
 * 键盘：`Esc` 清除筛选 / 关闭弹窗，流程节点是 `role="tab"` 的可聚焦按钮（`Enter` 切换），treemap 方块与大类段可 `Tab` 聚焦并用 `Enter` 选中。
 
-### 3.5 阶段口径（Prefill / Decode）
+### 3.7 阶段口径（Prefill / Decode）
 
 页面「阶段口径」可切换 `自动推断 / 仅 Prefill / 仅 Decode` 并**重新分析**。由于昇腾产物默认没有阶段标签，推荐做法是：
 
 * 分别采集 prefill-only 与 decode-only 两个窗口（`/start_profile` → 只发长 prompt → `/stop_profile`，再单独采 decode），然后在页面上直接指定阶段；
 * 若无法分开采集，插件会按步长分布推断（log 空间双峰），并在报告中标注置信度与推断依据；`step_trace_time.csv` 的 `Stage` 列优先级最高。
 
-### 3.6 导出报告
+### 3.8 导出报告
 
 * **Markdown**：完整报告（含 ①–⑤ 全链路、门限比对明细、TopN 表、阶段指标、口径与告警）。若已导出过 PDF，图表快照会作为内嵌图片一并写入，文件自包含、可直接分发；
 * **PDF**：页面先捕获**泳道图（完整采集窗口）**、**大类构成条**与**耗时分布图**快照提交给服务端，然后打开打印优化版 HTML 并自动弹出打印对话框，选择"另存为 PDF"即可。不引入任何 PDF 库，保留矢量文字与可选中文本。
 
 导出时若图表捕获失败（例如浏览器限制 canvas 导出），报告仍会正常生成，只在图表章节说明原因。
 
-### 3.7 内置说明文档
+### 3.9 内置说明文档
 
 页面顶部「说明文档」按钮，包含：指标定义与计算公式、口径注意事项、每个 profiling 产物（含字段表头）的用途与陷阱、快速开始与性能提示。同样的内容以 Markdown 形式保存在 [`docs/metrics-and-fields.md`](docs/metrics-and-fields.md)。
 
-### 3.9 界面预览
+### 3.10 界面预览
 
 截图由 [`tools/capture-page.mjs`](tools/capture-page.mjs) 通过 DevTools 协议驱动无头浏览器生成（等三模块真正渲染、动画结束后再截图）。数据为 `test/fixtures/host-schedule-bound` 场景：35,713 个事件 / 21 个算子 / 20 个推理步，主导瓶颈 = Host 调度 97 分。
 
@@ -292,6 +322,7 @@ dsh-plugin-vllm-ascend-profiler/
 │   │   ├── recommend.js         # ④ 方案 + ⑤ 预期收益
 │   │   ├── compare.js           # 前后对比：指标 delta / 大类与算子变化 / 建议达成校验 / 可比性
 │   │   └── thresholds.js        # 全部门限常量 + 取值依据
+│   ├── handoff.js               # 建议 → 算子优化任务（目标算子 / skills 链 / 验收标准 / 任务包落盘）
 │   └── report/
 │       ├── markdown.js          # Markdown 报告
 │       └── print.js             # 打印/PDF 版 HTML
@@ -304,15 +335,17 @@ dsh-plugin-vllm-ascend-profiler/
 │   ├── charts.js                # 模块二：占比与排行投影 + 数据表 + PNG 导出
 │   ├── advice-view.js           # 模块三：①→⑤ 流程 + 单面板图块
 │   ├── compare-view.js          # 第 6 步：前后对比面板 / delta 徽标 / 变化表
+│   ├── handoff-view.js          # 第 5 步「执行」：算子优化任务面板（算子 / skills / 验收 / 指令）
 │   ├── docs-view.js             # 说明文档渲染
 │   └── app.js                   # 页面控制器
 ├── docs/
 │   ├── metrics-and-fields.md    # 指标含义 + profiling 字段说明
 │   ├── analysis-logic.md        # 分析推理链、门限表、收益推算公式、前后对比判定规则
+│   ├── operator-handoff.md      # 端到端交接：profiling 分析 → 算子 skills → 算子工程（含实测链路）
 │   ├── research/                # 产物格式调研（带官方文档/源码引用）
 │   └── screenshots/             # 界面截图
 ├── tools/capture-page.mjs       # 开发工具：DevTools 协议驱动无头浏览器抓图
-└── test/                        # 96 个用例 + 场景夹具生成器 + 真实 trace 夹具
+└── test/                        # 107 个用例 + 场景夹具生成器 + 真实 trace 夹具
 ```
 
 ### 数据流
@@ -377,7 +410,7 @@ node test/web-dom.test.mjs            # 前端三模块真实渲染 + 控制器 
 node test/client-bundle.test.mjs      # 浏览器插件包的加载、注册与降级
 ```
 
-当前状态：**96 个用例全部通过**（CI 在 Node 22 与 24 上跑同一套，见 [`.github/workflows/test.yml`](.github/workflows/test.yml)）。
+当前状态：**107 个用例全部通过**（CI 在 Node 22 与 24 上跑同一套，见 [`.github/workflows/test.yml`](.github/workflows/test.yml)）。
 
 值得说明的验证强度：
 
@@ -391,7 +424,7 @@ node test/client-bundle.test.mjs      # 浏览器插件包的加载、注册与�
 [`tools/audit-provenance.mjs`](tools/audit-provenance.mjs) 用一个**已启动的实例 + 无头浏览器**回答这个问题，28 项检查分三层：
 
 ```powershell
-# 1) 启动带插件的实例（§2），2) 启动带调试端口的无头浏览器（§3.9）
+# 1) 启动带插件的实例（§2），2) 启动带调试端口的无头浏览器（§3.10）
 node tools/audit-provenance.mjs --url http://127.0.0.1:3099/vllm-ascend-profiler/ `
   --fixture test/fixtures/host-schedule-bound --port 9222
 ```
@@ -406,7 +439,7 @@ node tools/audit-provenance.mjs --url http://127.0.0.1:3099/vllm-ascend-profiler
 
 ## 7. 已知边界
 
-* **阶段标签**：Ascend 产物默认不含 Prefill/Decode 标签（`step_trace_time.csv` 的 `Stage` 除外）。未分开采集时，阶段划分为推断结果，报告中标注置信度；建议按 §3.5 分开采集。
+* **阶段标签**：Ascend 产物默认不含 Prefill/Decode 标签（`step_trace_time.csv` 的 `Stage` 除外）。未分开采集时，阶段划分为推断结果，报告中标注置信度；建议按 §3.7 分开采集。
 * **大 trace**：解析阶段按事件预算等距采样，视图阶段再按行预算投影；两者都会在页面与报告里说明，累计耗时优先取 CANN 统计表以保证占比可信。
 * **CSV 多表不叠加**：同一份设备耗时常常同时出现在 `op_statistic.csv`（按算子）、`kernel_details.csv`（按 kernel）与 `operator_details.csv`（按算子实例）里。插件只取其中一张表作为 CSV 口径（优先统计表），其余表作为证据列出；两张表相差 >20% 时告警，而不是把差异平均掉或相加。
 * **绝对时间不混轴**：CSV 的 `Start Time` 是设备绝对时间，trace 的 `ts` 是相对时间，二者不做同轴绘制；聚合按统一单位合并并给出 cross-check 偏差。

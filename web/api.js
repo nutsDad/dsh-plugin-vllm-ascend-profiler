@@ -119,6 +119,13 @@
       getDataset: (id) => getJson(`/datasets/${id}`),
       /** Compare two datasets: `beforeId` is the baseline, `afterId` the optimized capture. */
       compare: (beforeId, afterId) => getJson(`/datasets/${beforeId}/compare?with=${encodeURIComponent(afterId)}`),
+      /** Skill inventory of the Ascend bundles the operator handoff drives. */
+      skills: () => getJson('/skills'),
+      /**
+       * Turn one advice item into an operator-optimization task for the Ascend
+       * skills; the host writes the package into the session workspace.
+       */
+      adviceHandoff: (datasetId, adviceId) => postJson(`/datasets/${datasetId}/advice/${encodeURIComponent(adviceId)}/handoff`, {}),
       analyze: (id, options) => postJson(`/datasets/${id}/analyze`, options),
       postCharts: (id, charts) => postJson(`/datasets/${id}/charts`, { charts }),
       deleteDataset: async (id) => {

@@ -284,8 +284,16 @@
           link !== undefined && typeof options.onFocus === 'function'
             ? h('button.small.ghost', { type: 'button', onclick: () => options.onFocus(link) }, '查看')
             : undefined,
+          typeof options.onExecute === 'function'
+            ? h('button.small.primary.execute', {
+              type: 'button',
+              title: '把这条建议交给 Ascend 算子优化 skills 执行',
+              onclick: () => options.onExecute(item),
+            }, '执行')
+            : undefined,
         ]),
       ]);
+      const handoff = options.handoffs?.[item.id];
       const detail = h('details.compact', {}, [
         h('summary', {}, '依据 / 动作 / 验证'),
         h('dl', {}, [
@@ -299,11 +307,23 @@
           item.linkedRootCauses.length === 0 ? undefined : h('dd.mono', {}, item.linkedRootCauses.join('、')),
         ]),
       ]);
-      return h('div.action-block', {}, [head, detail]);
+      const panel = handoff === undefined
+        ? undefined
+        : (handoff.error !== undefined
+          ? h('p.error-inline', {}, `交接失败：${handoff.error}`)
+          : (handoff.task === undefined
+            ? h('p.hint.handoff-pending', {}, '正在生成算子优化任务…')
+            : VAP.handoffView.renderHandoff(handoff.task, { onCopy: options.onCopyPrompt, copied: options.copiedPrompt === item.id })));
+      return h('div.action-block', {}, [head, panel, detail]);
     });
     return h('div.panel', {}, [
       h('div.panel-head', {}, [
         h('span.hint', {}, `共 ${String(items.length)} 项 · 横条为收益区间（竖线=估算值，浅色=经验区间）`),
+        options.skillsStatus === undefined ? undefined : h('span.chip.phase', {
+          title: options.skillsStatus.missingCount > 0
+            ? `未安装：${(options.skillsStatus.missing ?? []).join('、')}`
+            : 'Ascend 算子优化 skills 全部可用',
+        }, `算子优化 skills ${String(options.skillsStatus.installedCount)}/${String(options.skillsStatus.totalCount)}`),
       ]),
       ...rows,
     ]);

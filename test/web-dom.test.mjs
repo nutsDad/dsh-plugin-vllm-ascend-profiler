@@ -10,6 +10,7 @@ import { buildDataset } from '../lib/model/dataset.js';
 import { analyzeDataset, compareCaptures } from '../lib/analysis/index.js';
 import { buildViewModel } from '../lib/view.js';
 import { documentationBundle } from '../lib/docs.js';
+import { buildHandoff } from '../lib/handoff.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const webRoot = join(here, '..', 'web');
@@ -450,7 +451,7 @@ function loadPage({ withHtmlIds = false, fetchImpl, noMotion = false } = {}) {
   sandbox.globalThis = sandbox;
   if (noMotion) sandbox.document.body.classList.add('no-motion');
   vm.createContext(sandbox);
-  for (const file of ['util.js', 'api.js', 'diagram.js', 'charts.js', 'gantt.js', 'docs-view.js', 'advice-view.js', 'compare-view.js', 'app.js']) {
+  for (const file of ['util.js', 'api.js', 'diagram.js', 'charts.js', 'gantt.js', 'docs-view.js', 'advice-view.js', 'handoff-view.js', 'compare-view.js', 'app.js']) {
     const source = readFileSync(join(webRoot, file), 'utf8');
     vm.runInContext(source, sandbox, { filename: file });
   }
@@ -866,13 +867,14 @@ const afterFixtureDir = join(here, 'fixtures', 'host-schedule-bound-optimized');
  * comparison payload (computed by `compareCaptures`), so step 6 and the
  * before/after panes are driven exactly like in the browser.
  */
-async function bootPage({ withDataset = true, noMotion = true, withCompare = false } = {}) {
+async function bootPage({ withDataset = true, noMotion = true, withCompare = false, handoffAdviceId = 'host.reduce-dispatch' } = {}) {
   const bundle = documentationBundle({ version: '1.0.0' });
   /** Test switch: make the parse job hand back the baseline dataset id. */
   const stubState = { sameDatasetAsBefore: false };
   let comparison;
   let afterViewModel;
   let viewModel;
+  let handoff;
   if (withCompare) {
     // The baseline the page loads *is* the "before" side of the comparison, so it
     // has to carry the same dataset id the stub routes on.
@@ -881,9 +883,40 @@ async function bootPage({ withDataset = true, noMotion = true, withCompare = fal
     viewModel = before.viewModel;
     afterViewModel = after.viewModel;
     comparison = compareCaptures({ before, after });
+    handoff = buildHandoff({
+      adviceId: handoffAdviceId,
+      dataset: before.dataset,
+      analysis: before.analysis,
+      datasetId: DATASET_ID,
+      label: 'host-schedule-bound',
+      roots: [],
+      createdAt: '2026-01-02T03:04:05.000Z',
+    });
   } else {
     viewModel = await loadViewModel();
+    const capture = await loadCapture(fixtureDir, 'host-schedule-bound', DATASET_ID);
+    handoff = buildHandoff({
+      adviceId: handoffAdviceId,
+      dataset: capture.dataset,
+      analysis: capture.analysis,
+      datasetId: DATASET_ID,
+      label: 'host-schedule-bound',
+      roots: [],
+      createdAt: '2026-01-02T03:04:05.000Z',
+    });
   }
+  const skillsPayload = {
+    ok: true,
+    repo: 'https://github.com/ascend-ai-coding/awesome-ascend-skills',
+    roots: [{ source: 'user-dsh', path: 'C:/skills', exists: true }],
+    bundles: [
+      { name: 'ascend-base', purpose: '基础', skills: [{ name: 'torch_npu', installed: true }] },
+      { name: 'ascend-profiling', purpose: '分析', skills: [{ name: 'profiling-analysis', installed: true }] },
+      { name: 'ascend-ops', purpose: '算子', skills: [{ name: 'ascendc', installed: true }, { name: 'npu-op-benchmark', installed: false }] },
+    ],
+    installedCount: 3,
+    missingCount: 1,
+  };
   const sandbox = loadPage({
     withHtmlIds: true,
     // Geometry assertions need deterministic frames; animation itself is covered
@@ -895,6 +928,16 @@ async function bootPage({ withDataset = true, noMotion = true, withCompare = fal
         return { ok: true, json: async () => ({ ok: true, plugin: 'vllm-ascend-profiler', version: '1.0.0', store: { datasets: withDataset ? 1 : 0, jobs: 0, maxDatasets: 6 }, limits: { maxUploadBytes: 1000, maxInMemoryBytes: 500, allowPathIngest: true } }) };
       }
       if (path.includes('/api/docs')) return { ok: true, json: async () => bundle };
+      if (path.includes('/api/skills')) return { ok: true, json: async () => skillsPayload };
+      if (path.includes('/advice/') && path.endsWith('/handoff')) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            task: { ...handoff, artifacts: { dir: 'D:/ws/.dsh-vap-tasks', markdownPath: 'D:/ws/.dsh-vap-tasks/task.md', jsonPath: 'D:/ws/.dsh-vap-tasks/task.json' } },
+          }),
+        };
+      }
       if (path.endsWith('/analyze')) {
         const requested = JSON.parse(options.body ?? '{}').phaseOverride;
         return { ok: true, json: async () => ({ ok: true, analysis: { ...viewModel.analysis, options: { ...viewModel.analysis.options, phaseOverride: requested } } }) };
@@ -924,7 +967,7 @@ async function bootPage({ withDataset = true, noMotion = true, withCompare = fal
   await nextFrame();
   await nextFrame();
   sandbox.__stubState = stubState;
-  return { sandbox, viewModel, registry };
+  return { sandbox, viewModel, registry, handoff };
 }
 
 test('the controller initializes against the real page markup', async () => {
@@ -1181,4 +1224,74 @@ test('init survives an unreachable API without breaking the page', async () => {
   await assert.doesNotReject(async () => handler.handler());
   assert.match(registry.get('health-line').textContent, /健康检查失败/);
   assert.ok(registry.get('gantt-canvas').width > 0);
+});
+
+/**
+ * Step 5 ④ 优化行动 · 执行 hands the advice to the Ascend operator-optimization
+ * skills. Clicking it must reach the host route and turn the answer into a visible
+ * task: target operators, skill chain, acceptance bar and the instruction.
+ */
+test('执行 hands an advice item to the operator skills', async () => {
+  const { registry: reg, handoff } = await bootPage({ handoffAdviceId: 'host.reduce-dispatch' });
+  const chain = reg.get('advice-chain');
+  // Step ④ is where the action cards live.
+  const actionsNode = chain.querySelectorAll('button.flow-node').find((node) => node.dataset.node === 'actions');
+  actionsNode.click();
+  await nextFrame();
+
+  const buttons = chain.querySelectorAll('button.execute');
+  assert.equal(buttons.length, 3, 'every advice row offers 执行');
+  assert.ok(chain.textContent.includes('算子优化 skills 3/4'), 'the availability chip states how many skills are visible');
+
+  buttons[0].click();
+  await nextFrame();
+  await nextFrame();
+
+  const panel = chain.querySelectorAll('.handoff-panel');
+  assert.equal(panel.length, 1, 'exactly the clicked item grows a task panel');
+  const text = panel[0].textContent;
+  assert.match(text, /算子优化任务已生成/);
+  assert.match(text, /目标算子/);
+  assert.match(text, new RegExp(handoff.operators[0].name), 'the task names the operator the host picked');
+  assert.match(text, /执行的 skills（按顺序）/);
+  assert.match(text, /torch_npu/, 'the dispatch advice drives torch_npu');
+  assert.match(text, /ascendc/);
+  assert.match(text, /验收标准/);
+  assert.match(text, /Host 派发算子数\/步/);
+  assert.equal(panel[0].querySelectorAll('.skill-state').length, handoff.skills.chain.length);
+  assert.equal(panel[0].querySelectorAll('textarea.handoff-prompt').length, 1, 'the instruction is selectable text');
+  assert.ok(panel[0].textContent.includes('D:/ws/.dsh-vap-tasks/task.md'), 'the written task file is shown');
+
+  // Copying is best-effort (no clipboard in the fake DOM) and must not throw.
+  const copy = panel[0].querySelectorAll('button.primary')[0];
+  assert.equal(copy.textContent, '复制指令');
+  await assert.doesNotReject(async () => copy.click());
+  await nextFrame();
+});
+
+test('a handoff for a compute advice drives the AscendC chain', async () => {
+  const capture = await loadCapture(join(here, 'fixtures', 'prefill-compute-bound'), 'prefill-compute-bound', DATASET_ID);
+  const task = buildHandoff({
+    adviceId: 'compute.quantize',
+    dataset: capture.dataset,
+    analysis: capture.analysis,
+    datasetId: DATASET_ID,
+    label: 'prefill-compute-bound',
+    roots: [],
+  });
+  assert.equal(task.focus, 'kernel');
+  // The page above is loaded with the host-bound capture, so render this task's
+  // panel directly: the click path itself is covered by the 执行 test.
+  const { sandbox } = await bootPage();
+  const panel = sandbox.VAP.handoffView.renderHandoff(task, {});
+  const text = panel.textContent;
+  assert.match(text, /算子优化任务已生成/);
+  assert.match(text, /ascendc/, 'the compute advice drives AscendC');
+  assert.match(text, /MatMulV2/, 'and names the hot matmul');
+  assert.match(text, /设备计算耗时/);
+  assert.match(text, /缺少 skills/, 'without installed skills the panel says what to install');
+  assert.match(text, /awesome-ascend-skills/);
+  assert.match(text, /npx .*ascend-base ascend-profiling ascend-ops/, 'and how to install them');
+  // A task payload that never arrived must not explode the panel.
+  assert.match(sandbox.VAP.handoffView.renderHandoff(undefined, {}).textContent, /不可用/);
 });

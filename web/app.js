@@ -32,6 +32,12 @@
     ganttAfter: undefined,
     /** `{ beforeId, afterId, view, comparison }` once an optimized capture is paired. */
     compare: undefined,
+    /** Advice id → `{ task }` / `{ error }` / `{ pending }` operator handoffs. */
+    handoffs: {},
+    /** Advice id whose instruction was just copied (drives the button label). */
+    copiedPrompt: undefined,
+    /** Skill inventory of the Ascend bundles, from `/api/skills`. */
+    skills: undefined,
     health: undefined,
     datasets: [],
     busy: false,
@@ -69,7 +75,7 @@
       },
     });
     renderLegend();
-    await Promise.all([loadHealth(), loadDocs(), refreshDatasetList()]);
+    await Promise.all([loadHealth(), loadDocs(), loadSkills(), refreshDatasetList()]);
     global.addEventListener('resize', VAP.debounce(() => {
       state.gantt.resize();
       state.ganttAfter?.resize();
@@ -774,9 +780,58 @@
       activeStep: state.adviceStep ?? previousStep,
       onStep: (id) => { state.adviceStep = id; },
       onFocus: (filter) => applyFilter(filter),
+      onExecute: (item) => { void executeAdvice(item); },
+      handoffs: state.handoffs,
+      copiedPrompt: state.copiedPrompt,
+      onCopyPrompt: (text, adviceId) => { void copyPrompt(text, adviceId); },
+      skillsStatus: state.skills === undefined
+        ? undefined
+        : {
+          installedCount: state.skills.installedCount,
+          missingCount: state.skills.missingCount,
+          totalCount: state.skills.installedCount + state.skills.missingCount,
+          missing: state.skills.bundles.flatMap((bundle) => bundle.skills.filter((skill) => !skill.installed).map((skill) => skill.name)),
+        },
     });
     state.adviceView = view;
     el.adviceChain.replaceChildren(view.element);
+  }
+
+  /**
+   * Hand one advice item to the Ascend operator-optimization skills.
+   *
+   * The host assembles the task (target operators, skill chain, acceptance bar)
+   * and writes it into the session workspace; the page only has to show it. The
+   * button is idempotent: pressing it again re-runs the handoff with the current
+   * analysis, which is what you want after a phase re-analysis.
+   */
+  async function executeAdvice(item) {
+    const datasetId = state.viewModel?.datasetId;
+    if (datasetId === undefined) return;
+    state.handoffs = { ...(state.handoffs ?? {}), [item.id]: { pending: true } };
+    renderAdvice();
+    try {
+      const payload = await VAP.api.adviceHandoff(datasetId, item.id);
+      state.handoffs = { ...(state.handoffs ?? {}), [item.id]: { task: payload.task } };
+    } catch (error) {
+      state.handoffs = { ...(state.handoffs ?? {}), [item.id]: { error: error.message } };
+    }
+    renderAdvice();
+  }
+
+  /** Copy the handoff instruction, with a visible acknowledgement in the panel. */
+  async function copyPrompt(text, adviceId) {
+    try {
+      if (globalThis.navigator?.clipboard?.writeText !== undefined) {
+        await globalThis.navigator.clipboard.writeText(text);
+      }
+      state.copiedPrompt = adviceId;
+    } catch {
+      // Clipboard access can be denied (insecure context): the textarea in the
+      // panel stays selectable, so copying by hand still works.
+      state.copiedPrompt = undefined;
+    }
+    renderAdvice();
   }
 
   /** Grow every meter from 0 to its target so progress reads as progress. */
@@ -1018,8 +1073,23 @@
     }
   }
 
-  async function loadHealth() {
+  /**
+   * Operator-optimization skills the 执行 button drives.
+   *
+   * Best-effort: an unreachable inventory (older host, missing skills) must not
+   * break the page — the advice panel simply omits the availability chip and the
+   * handoff panel reports what is missing per task.
+   */
+  async function loadSkills() {
     try {
+      state.skills = await VAP.api.skills();
+    } catch {
+      state.skills = undefined;
+    }
+    renderAdvice();
+  }
+
+  async function loadHealth() {    try {
       state.health = await VAP.api.health();
       el.healthLine.textContent = `服务正常 · 数据集 ${String(state.health.store.datasets)}/${String(state.health.store.maxDatasets)}`;
     } catch (error) {

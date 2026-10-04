@@ -12,6 +12,7 @@ import './protobuf.test.mjs';
 import './pipeline.test.mjs';
 import './analysis.test.mjs';
 import './compare.test.mjs';
+import './handoff.test.mjs';
 import './http.test.mjs';
 import './web-dom.test.mjs';
 import './client-bundle.test.mjs';
