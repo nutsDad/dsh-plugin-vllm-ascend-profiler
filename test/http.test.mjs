@@ -420,8 +420,10 @@ test('the skills endpoint inventories the Ascend bundles it can see', async () =
   assert.ok(ops.skills.some((skill) => skill.name === 'ascendc'));
   const base = payload.bundles.find((bundle) => bundle.name === 'ascend-base');
   assert.ok(base.skills.some((skill) => skill.name === 'torch_npu'));
-  // Roots mirror DSH's own discovery order, and are reported either way.
+  // Roots mirror DSH's own discovery order, and are reported either way (the user
+  // root falls back to $DSH_HOME, then ~/.dsh, so CI without DSH_HOME still sees it).
   assert.ok(payload.roots.some((root) => root.source === 'user-dsh'));
+  assert.ok(payload.roots.some((root) => root.source === 'project-dsh'));
   assert.equal(payload.installedCount + payload.missingCount, payload.bundles.reduce((sum, bundle) => sum + bundle.skills.length, 0));
 });
 
